@@ -1,0 +1,12 @@
+# Vortex engine - module manifest, in dependency order.
+#
+# tools/bundle.py concatenates these into one Cpyte translation unit, which is
+# what the compiler needs (see docs/BUILD.md for the reasons). Entries are
+# relative to this file; `use <manifest>` splices in another list.
+engine/native.cpy
+engine/core.cpy
+util/strings.cpy
+buf/vbuf.cpy
+io/nbt.cpy
+world/palette.cpy
+world/section.cpy

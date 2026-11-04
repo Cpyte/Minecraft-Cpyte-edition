@@ -1,0 +1,66 @@
+bundled 8 modules -> build\buf.cpy
+\u25b6 Compiling build/buf.cpy ...
+Wrote dist/buf.exe
+built: dist/buf.exe
+vortex codec tests
+strings:
+  ok   slice length
+  ok   slice content
+  ok   slice clamps
+  ok   trim
+  ok   find
+  ok   find absent
+  ok   field 0
+  ok   field 1
+  ok   empty field kept
+  ok   field past end empty
+  ok   field count
+  ok   code at
+  ok   parse int
+  ok   parse int spaces
+  ok   parse junk
+  ok   parse bool
+  ok   parse int ok flag
+  ok   parse int ok set
+  ok   parse int fail flag
+  ok   parse int fail clears
+  ok   hash differs
+  ok   hash stable
+  ok   vstr length
+  ok   vstr grew
+  ok   vstr content head
+varint:
+  ok   300 is two groups
+  ok   300 round trip
+  ok   zero is one group
+  ok   zero round trip
+  ok   minus one is five groups
+  ok   minus one round trip
+  ok   max int round trip
+  ok   min int round trip
+  ok   varlong five groups
+  ok   varlong wide round trip
+  ok   minus one varlong is ten groups
+  ok   minus one varlong round trip
+  ok   varlong negative ok
+  ok   varlong negative round trip
+  ok   truncated varint flagged
+fixed width:
+  ok   be byte count
+  ok   be writes high byte first
+  ok   be round trip
+  ok   le writes low byte first
+  ok   le round trip
+  ok   i64 be round trip
+  ok   u64 be round trip
+  ok   string round trip
+  ok   string read was complete
+  ok   overlong string flagged
+  ok   empty read is zero
+  ok   empty read keeps pos
+growth:
+  ok   length after 5000
+  ok   capacity covers length
+  ok   doubling kept
+  ok   spot check tail
+vortex codec tests: all passed

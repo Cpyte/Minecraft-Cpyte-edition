@@ -1,0 +1,4 @@
+# NBT test bundle.
+use ../src/engine.txt
+harness.cpy
+test_nbt.cpy

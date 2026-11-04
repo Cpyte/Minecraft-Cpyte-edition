@@ -1,0 +1,5 @@
+\u25b6 Compiling src/mctest.cpy ...
+error compiling C:\Users\Son ha\Documents\Qoder\2026-11-04\a79a42b8\vortex\src\network.c: C:\Users\Son ha\Documents\Qoder\2026-11-04\a79a42b8\vortex\src\network.c:2:10: fatal error: dlfcn.h: No such file or directory
+    2 | #include <dlfcn.h>
+      |          ^~~~~~~~~
+compilation terminated.

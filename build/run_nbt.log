@@ -1,0 +1,57 @@
+bundled 8 modules -> build\nbt.cpy
+\u25b6 Compiling build/nbt.cpy ...
+Wrote dist/nbt.exe
+built: dist/nbt.exe
+nbt layout:
+  ok   tag int size
+  ok   kind byte
+  ok   name length high
+  ok   name length low
+  ok   name first byte
+  ok   payload high bytes
+  ok   payload big endian
+  ok   empty compound size
+  ok   compound terminator
+nbt scalars:
+  ok   root parsed
+  ok   root name
+  ok   root kind
+  ok   child count
+  ok   byte
+  ok   short
+  ok   int
+  ok   long
+  ok   string
+  ok   float
+  ok   double
+  ok   missing child
+  ok   absent child is null
+  ok   re-encode is stable
+  ok   re-encoded bytes match
+nbt arrays:
+  ok   arrays parsed
+  ok   byte array length
+  ok   byte array keeps 250
+  ok   byte array keeps -1
+  ok   int array length
+  ok   int array value
+  ok   int array negative
+  ok   long array length
+  ok   long array -1
+  ok   long array wide
+  ok   out of range int
+nbt palette shape:
+  ok   section parsed
+  ok   section y
+  ok   block_states found
+  ok   palette is a list
+  ok   palette entries
+  ok   entry name
+  ok   entry id
+  ok   index guard
+  ok   negative index guard
+  ok   list element kind
+nbt truncation:
+  ok   all prefixes rejected
+  ok   empty input
+vortex nbt tests: all passed

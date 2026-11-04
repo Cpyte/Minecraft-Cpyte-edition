@@ -1,0 +1,4 @@
+# Codec test bundle: the engine, the harness, then the test's main().
+use ../src/engine.txt
+harness.cpy
+test_buf.cpy
