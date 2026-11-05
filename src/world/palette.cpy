@@ -239,22 +239,34 @@ def vcont_collect(c: VContainer*, values: int*) -> void:
         i += 1
 
 
-# How many distinct values `values` holds; counting each first appearance only
-# keeps the loop free of `break`, which the compiler does not accept here.
+# Counts distinct values in linear expected time; section compaction calls this
+# on all 4096 block entries, so a pairwise scan is prohibitively slow.
 def vcont_count_distinct(values: int*, count: int) -> int:
+    if count <= 0:
+        return 0
+    int capacity = 1
+    while capacity < count * 2:
+        capacity *= 2
+    int* slots = vt_calloc_int(capacity)
+    char* occupied = vt_calloc_char(capacity)
     int distinct = 0
     int probe = 0
     while probe < count:
         int candidate = vt_iget(values, probe)
-        int first = 1
-        int k = 0
-        while k < probe:
-            if vt_iget(values, k) == candidate:
-                first = 0
-            k += 1
-        if first == 1:
+        uint64 key = (uint64)candidate
+        key = key ^ (key >> (uint64)16)
+        key = key * (uint64)2654435761
+        key = key ^ (key >> (uint64)13)
+        int slot = (int)(key & (uint64)(capacity - 1))
+        while vt_at(occupied, slot) != 0 and vt_iget(slots, slot) != candidate:
+            slot = (slot + 1) & (capacity - 1)
+        if vt_at(occupied, slot) == 0:
+            vt_put(occupied, slot, 1)
+            vt_iset(slots, slot, candidate)
             distinct += 1
         probe += 1
+    vt_free((void*)slots)
+    vt_free((void*)occupied)
     return distinct
 
 
@@ -462,6 +474,11 @@ public def vcont_palette_add(c: VContainer*, value: int) -> void:
 public def vcont_alloc(c: VContainer*, bits: int) -> void:
     vcont_alloc_words(c, bits)
     c.mode = vcont_indirect_mode()
+
+
+public def vcont_alloc_direct(c: VContainer*, bits: int) -> void:
+    vcont_alloc_words(c, bits)
+    c.mode = vcont_direct_mode()
 
 
 public def vcont_set_word(c: VContainer*, index: int, value: uint64) -> void:

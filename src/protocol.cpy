@@ -360,8 +360,6 @@ public def is_ignorable_configuration_packet(packet_id: int64) -> bool:
         return true
     if packet_id == 6:
         return true
-    if packet_id == 7:
-        return true
     if packet_id == 8:
         return true
     if packet_id == 10:
@@ -527,6 +525,76 @@ public def find_nbt_field(data: int64[], compound_offset: int64, field_name: str
             return decode_result(-1, 0, position)
         position = child[2]
     return decode_result(-1, 0, position)
+
+public def nbt_int_field(data: int64[], compound_offset: int64,
+                         field_name: str) -> int64[]:
+    int64[] field = find_nbt_field(data, compound_offset, field_name)
+    if field[0] != 1 or field[1] != 3 or field[2] + 4 > len(data):
+        return decode_result(-1, 0, compound_offset)
+    return decode_result(1, decode_be_int32(data, field[2]), field[2] + 4)
+
+public def parse_dimension_type_entry(data: int64[], nbt_offset: int64,
+                                      registry: VDimensionRegistry*,
+                                      entry_index: int64) -> int:
+    if nbt_offset < 0 or nbt_offset >= len(data) or data[nbt_offset] != 10:
+        return 0
+    int64 root = nbt_offset + 1
+    int64[] min_y = nbt_int_field(data, root, "min_y")
+    int64[] height = nbt_int_field(data, root, "height")
+    if min_y[0] != 1 or height[0] != 1:
+        int64[] element = find_nbt_field(data, root, "element")
+        if element[0] != 1 or element[1] != 10:
+            return 0
+        min_y = nbt_int_field(data, element[2], "min_y")
+        height = nbt_int_field(data, element[2], "height")
+    if min_y[0] != 1 or height[0] != 1:
+        return 0
+    return vdimension_registry_add_dimension(registry, (int)entry_index,
+                                              (int)min_y[1], (int)height[1])
+
+public def parse_configuration_registry(body: int64[], packet_offset: int64,
+                                        registry: VDimensionRegistry*) -> int:
+    int64[] key = read_string_field(body, packet_offset, 32767)
+    if key[0] != 1:
+        return 0
+    int64[] entry_count = decode_varint(body, key[2] + key[1])
+    if entry_count[0] != 1 or entry_count[1] < 0 or entry_count[1] > 65536:
+        return 0
+    bool dimensions = nbt_string_equals(body, key, "minecraft:dimension_type")
+    bool biomes = nbt_string_equals(body, key, "minecraft:worldgen/biome")
+    if (dimensions or biomes) and entry_count[1] < 1:
+        return 0
+    if dimensions and entry_count[1] > 256:
+        return 0
+
+    int64 position = entry_count[2]
+    int64 index = 0
+    while index < entry_count[1]:
+        int64[] name = read_string_field(body, position, 32767)
+        if name[0] != 1:
+            return 0
+        position = name[2] + name[1]
+        if position >= len(body) or (body[position] != 0 and body[position] != 1):
+            return 0
+        int64 has_data = body[position]
+        position += 1
+        if has_data == 1:
+            if position >= len(body) or body[position] != 10:
+                return 0
+            if dimensions and parse_dimension_type_entry(body, position, registry, index) == 0:
+                return 0
+            int64[] end = skip_nbt_payload(body, 10, position + 1, 0)
+            if end[0] != 1 or end[2] <= position:
+                return 0
+            position = end[2]
+        index += 1
+    if position != len(body):
+        return 0
+    if dimensions and vdimension_registry_finish_dimensions(registry, (int)entry_count[1]) == 0:
+        return 0
+    if biomes and vdimension_registry_set_biome_count(registry, (int)entry_count[1]) == 0:
+        return 0
+    return 1
 
 public def print_nbt_text_depth(data: int64[], tag_type: int64, offset: int64, depth: int64) -> int:
     if depth > 64:
@@ -1177,7 +1245,243 @@ public def print_system_chat(body: int64[], offset: int64) -> int:
     print("Received a system chat component in an unsupported format")
     return 0
 
-public def play_session(socket_handle: int64) -> int:
+def chunk_light_mask_has_bit(data: int64[], words_offset: int64,
+                             word_count: int64, bit: int64) -> bool:
+    if bit < 0 or bit / 64 >= word_count:
+        return false
+    int64 byte_offset = words_offset + (bit / 64) * 8 + 7 - (bit % 64) / 8
+    int64 bit_in_byte = bit % 8
+    return (data[byte_offset] & (1 << bit_in_byte)) != 0
+
+
+def chunk_read_light_mask(data: int64[], offset: int64,
+                          bit_limit: int64) -> int64[]:
+    int64[] mask = new int64[4]
+    int64[] count = decode_varint(data, offset)
+    if count[0] != 1 or count[1] < 0 or count[1] > (bit_limit + 63) / 64:
+        return mask
+    if count[2] + count[1] * 8 > len(data):
+        return mask
+    int64 bit = bit_limit
+    while bit < count[1] * 64:
+        if chunk_light_mask_has_bit(data, count[2], count[1], bit):
+            return mask
+        bit += 1
+    mask[0] = 1
+    mask[1] = count[2]
+    mask[2] = count[1]
+    mask[3] = count[2] + count[1] * 8
+    return mask
+
+
+def chunk_mask_bit_count(data: int64[], words_offset: int64,
+                         word_count: int64, bit_limit: int64) -> int64:
+    int64 total = 0
+    int64 bit = 0
+    while bit < bit_limit:
+        if chunk_light_mask_has_bit(data, words_offset, word_count, bit):
+            total += 1
+        bit += 1
+    return total
+
+
+def chunk_masks_overlap(data: int64[], first_offset: int64,
+                        first_words: int64, second_offset: int64,
+                        second_words: int64, bit_limit: int64) -> bool:
+    int64 bit = 0
+    while bit < bit_limit:
+        if chunk_light_mask_has_bit(data, first_offset, first_words, bit) and chunk_light_mask_has_bit(data, second_offset, second_words, bit):
+            return true
+        bit += 1
+    return false
+
+
+def chunk_skip_block_entities(data: int64[], offset: int64) -> int64[]:
+    int64[] result = decode_result(-1, 0, offset)
+    int64[] count = decode_varint(data, offset)
+    if count[0] != 1 or count[1] < 0 or count[1] > 4096:
+        return result
+    int64 position = count[2]
+    int64 index = 0
+    while index < count[1]:
+        if position + 3 > len(data) or data[position] < 0 or data[position] > 255:
+            return result
+        position += 3
+        int64[] entity_type = decode_varint(data, position)
+        if entity_type[0] != 1 or entity_type[1] < 0:
+            return result
+        position = entity_type[2]
+        if position >= len(data) or data[position] != 10:
+            return result
+        int64[] nbt_end = skip_nbt_payload(data, 10, position + 1, 0)
+        if nbt_end[0] != 1 or nbt_end[2] <= position:
+            return result
+        position = nbt_end[2]
+        index += 1
+    return decode_result(1, count[1], position)
+
+
+def chunk_read_light_arrays(data: int64[], offset: int64,
+                            mask_offset: int64, mask_words: int64,
+                            bit_limit: int64, sections: char*,
+                            sky_light: bool) -> int64[]:
+    int64[] failure = decode_result(-1, 0, offset)
+    int64[] count = decode_varint(data, offset)
+    if count[0] != 1 or count[1] != chunk_mask_bit_count(
+        data, mask_offset, mask_words, bit_limit):
+        return failure
+    int64 position = count[2]
+    int64 bit = 0
+    while bit < bit_limit:
+        if chunk_light_mask_has_bit(data, mask_offset, mask_words, bit):
+            int64[] length = decode_varint(data, position)
+            if length[0] != 1 or length[1] != 2048 or length[2] + 2048 > len(data):
+                return failure
+            if bit > 0 and bit < bit_limit - 1:
+                VSection* section = (VSection*)vt_ptr_get(sections, (int)(bit - 1))
+                char* target = section.block_light
+                if sky_light:
+                    target = section.sky_light
+                int64 byte = 0
+                while byte < 2048:
+                    if data[length[2] + byte] < 0 or data[length[2] + byte] > 255:
+                        return failure
+                    vt_put(target, (int)(byte), (int)data[length[2] + byte])
+                    byte += 1
+            position = length[2] + 2048
+        bit += 1
+    return decode_result(1, count[1], position)
+
+
+def chunk_decode_light_and_entities(world: VWorld*, body: int64[],
+                                    offset: int64, sections: char*) -> int:
+    int64[] entities = chunk_skip_block_entities(body, offset)
+    if entities[0] != 1:
+        print("Malformed chunk block-entity data")
+        return 1
+    int64 bit_limit = world.section_count + 2
+    int64 position = entities[2]
+    int64[] sky_mask = chunk_read_light_mask(body, position, bit_limit)
+    if sky_mask[0] != 1:
+        print("Malformed chunk sky-light mask")
+        return 1
+    position = sky_mask[3]
+    int64[] block_mask = chunk_read_light_mask(body, position, bit_limit)
+    if block_mask[0] != 1:
+        print("Malformed chunk block-light mask")
+        return 1
+    position = block_mask[3]
+    int64[] empty_sky_mask = chunk_read_light_mask(body, position, bit_limit)
+    if empty_sky_mask[0] != 1:
+        print("Malformed chunk empty-sky-light mask")
+        return 1
+    position = empty_sky_mask[3]
+    int64[] empty_block_mask = chunk_read_light_mask(body, position, bit_limit)
+    if empty_block_mask[0] != 1:
+        print("Malformed chunk empty-block-light mask")
+        return 1
+    position = empty_block_mask[3]
+    if chunk_masks_overlap(body, sky_mask[1], sky_mask[2],
+                           empty_sky_mask[1], empty_sky_mask[2], bit_limit):
+        print("Chunk sky-light masks overlap")
+        return 1
+    if chunk_masks_overlap(body, block_mask[1], block_mask[2],
+                           empty_block_mask[1], empty_block_mask[2], bit_limit):
+        print("Chunk block-light masks overlap")
+        return 1
+    int64[] sky_arrays = chunk_read_light_arrays(
+        body, position, sky_mask[1], sky_mask[2], bit_limit, sections, true)
+    if sky_arrays[0] != 1:
+        print("Malformed chunk sky-light arrays")
+        return 1
+    position = sky_arrays[2]
+    int64[] block_arrays = chunk_read_light_arrays(
+        body, position, block_mask[1], block_mask[2], bit_limit, sections, false)
+    if block_arrays[0] != 1 or block_arrays[2] != len(body):
+        print("Malformed chunk block-light arrays or trailing data")
+        return 1
+    return 0
+
+
+public def decode_chunk_sections(world: VWorld*, body: int64[],
+                                 packet_offset: int64) -> int:
+    if world == null or packet_offset < 0 or packet_offset + 8 > len(body):
+        return 1
+    int64 chunk_x = decode_be_int32(body, packet_offset)
+    int64 chunk_z = decode_be_int32(body, packet_offset + 4)
+    int64 heightmaps_offset = packet_offset + 8
+    if heightmaps_offset >= len(body) or body[heightmaps_offset] != 10:
+        print("Chunk packet has no heightmap compound")
+        return 1
+    int64[] heightmaps_end = skip_nbt_payload(body, 10, heightmaps_offset + 1, 0)
+    if heightmaps_end[0] != 1:
+        print("Malformed chunk heightmaps")
+        return 1
+    int64[] data_length = decode_varint(body, heightmaps_end[2])
+    if data_length[0] != 1 or data_length[1] < 0 or data_length[2] + data_length[1] > len(body):
+        print("Malformed chunk section-data length")
+        return 1
+    VBuf* section_data = vbuf_new((int)data_length[1])
+    int64 index = 0
+    while index < data_length[1]:
+        vbuf_put_u8(section_data, (uint64)body[data_length[2] + index])
+        index += 1
+    section_data.pos = 0
+    int sections_ok = 0
+    char* sections = sec_read_wire_sections(
+        section_data, world.section_count, world.min_section,
+        world.block_global_bits, world.biome_global_bits, &sections_ok)
+    vbuf_free(section_data)
+    if sections_ok == 0 or sections == null:
+        print("Malformed or unsupported chunk section palettes")
+        return 1
+    int64 tail_offset = data_length[2] + data_length[1]
+    if chunk_decode_light_and_entities(world, body, tail_offset, sections) != 0:
+        vworld_free_column(sections, world.section_count)
+        return 1
+    if vworld_replace_sections(world, (int)chunk_x, (int)chunk_z, sections) == 0:
+        vworld_free_column(sections, world.section_count)
+        print("Loaded chunk capacity reached")
+        return 1
+    print(f"Decoded chunk ({chunk_x}, {chunk_z}) into {world.section_count} sections with lighting")
+    return 0
+
+
+public def read_play_login_dimension(body: int64[],
+                                     packet_offset: int64) -> int64[]:
+    if packet_offset < 0 or packet_offset + 5 > len(body):
+        return decode_result(-1, 0, packet_offset)
+    int64 position = packet_offset + 4
+    position += 1
+    int64[] dimension_count = decode_varint(body, position)
+    if dimension_count[0] != 1 or dimension_count[1] < 1 or dimension_count[1] > 1024:
+        return decode_result(-1, 0, position)
+    position = dimension_count[2]
+    int64 index = 0
+    while index < dimension_count[1]:
+        int64[] name = read_string_field(body, position, 32767)
+        if name[0] != 1:
+            return decode_result(-1, 0, position)
+        position = name[2] + name[1]
+        index += 1
+    index = 0
+    while index < 3:
+        int64[] value = decode_varint(body, position)
+        if value[0] != 1 or value[1] < 0:
+            return decode_result(-1, 0, position)
+        position = value[2]
+        index += 1
+    if position + 3 > len(body):
+        return decode_result(-1, 0, position)
+    position += 3
+    int64[] dimension_type = decode_varint(body, position)
+    if dimension_type[0] != 1 or dimension_type[1] < 0:
+        return decode_result(-1, 0, position)
+    return dimension_type
+
+
+public def play_session_loop(socket_handle: int64, world: VWorld*,
+                             registry: VDimensionRegistry*) -> int:
     int64[] tracked_chunks_x = new int64[8192]
     int64[] tracked_chunks_z = new int64[8192]
     int64 tracked_chunk_count = 0
@@ -1246,6 +1550,20 @@ public def play_session(socket_handle: int64) -> int:
             print("Malformed Play packet id")
             return 1
         if packet_id[1] == 50:
+            int64[] dimension_type = read_play_login_dimension(body, packet_id[2])
+            if dimension_type[0] != 1:
+                print("Malformed Play login dimension metadata")
+                return 1
+            int64[] dimension = vdimension_registry_dimension(registry, (int)dimension_type[1])
+            if registry.dimension_registry_seen == 0 or registry.biome_registry_seen == 0 or dimension[0] == 0:
+                print("Configuration did not provide the active dimension and biome registries")
+                return 1
+            if vworld_set_dimension(world, dimension[1], dimension[2],
+                                    registry.block_global_bits,
+                                    registry.biome_global_bits) == 0:
+                print("Could not configure world for the server dimension")
+                return 1
+            print(f"Configured dimension sections: min={world.min_section}, count={world.section_count}, block bits={world.block_global_bits}, biome bits={world.biome_global_bits}")
             received_play_login = true
             int64[] player_loaded = new int64[0]
             int64[] response = encode_packet_frame(44, player_loaded)
@@ -1316,6 +1634,9 @@ public def play_session(socket_handle: int64) -> int:
                 return 1
             int64 chunk_x = decode_be_int32(body, packet_id[2])
             int64 chunk_z = decode_be_int32(body, packet_id[2] + 4)
+            if decode_chunk_sections(world, body, packet_id[2]) != 0:
+                print("Could not decode incoming chunk data")
+                return 1
             bool found_chunk = false
             int64 index = 0
             while index < tracked_chunk_count:
@@ -1328,7 +1649,7 @@ public def play_session(socket_handle: int64) -> int:
                 tracked_chunks_z[tracked_chunk_count] = chunk_z
                 tracked_chunk_count = tracked_chunk_count + 1
             if not found_chunk:
-                print(f"Received chunk ({chunk_x}, {chunk_z}) with {len(body) - (packet_id[2] - 8)} payload bytes; loaded chunk count: {tracked_chunk_count}")
+                print(f"Stored chunk ({chunk_x}, {chunk_z}); loaded chunk count: {tracked_chunk_count}")
         elif packet_id[1] == 38:
             if packet_id[2] + 8 > len(body):
                 print("Truncated chunk-unload packet")
@@ -1346,6 +1667,7 @@ public def play_session(socket_handle: int64) -> int:
                     tracked_chunk_count = tracked_chunk_count - 1
                     break
                 index = index + 1
+            vworld_unload_chunk(world, (int)chunk_x, (int)chunk_z)
             print(f"Forgot chunk ({chunk_x}, {chunk_z})")
         elif packet_id[1] == 1:
             int64[] entity_id = decode_varint(body, packet_id[2])
@@ -1434,7 +1756,19 @@ public def play_session(socket_handle: int64) -> int:
         print("Play packet limit reached")
     return 1
 
-public def handle_configuration(socket_handle: int64) -> int:
+
+public def play_session(socket_handle: int64,
+                        registry: VDimensionRegistry*) -> int:
+    VWorld* world = vworld_new(1024, 0, 1,
+                               registry.block_global_bits,
+                               registry.biome_global_bits)
+    int result = play_session_loop(socket_handle, world, registry)
+    vworld_free(world)
+    return result
+
+
+public def handle_configuration(socket_handle: int64,
+                                registry: VDimensionRegistry*) -> int:
     int64[] client_information = encode_config_client_information()
     if send_bytes(socket_handle, client_information) != 0:
         print("Failed to send configuration client information")
@@ -1555,6 +1889,10 @@ public def handle_configuration(socket_handle: int64) -> int:
         elif packet_id[1] == 19:
             if handle_configuration_dialog(socket_handle, body, packet_id[2], false) != 0:
                 print("Could not process the server configuration dialog")
+                return 1
+        elif packet_id[1] == 7:
+            if parse_configuration_registry(body, packet_id[2], registry) == 0:
+                print("Malformed or unsupported configuration registry data")
                 return 1
         elif packet_id[1] == 18:
             print("Server cleared the active configuration dialog")
@@ -1740,12 +2078,15 @@ public def offline_login(host: str, port: int64, username: str) -> int:
         return 1
     print(f"Offline login accepted for {username}")
     print("Login acknowledged; entering configuration")
-    int configuration_result = handle_configuration(socket_handle)
+    VDimensionRegistry* registry = vdimension_registry_new()
+    int configuration_result = handle_configuration(socket_handle, registry)
     if configuration_result != 0:
+        vdimension_registry_free(registry)
         mc_tcp_close(socket_handle)
         return configuration_result
     print("Entering Play packet exchange")
-    int play_result = play_session(socket_handle)
+    int play_result = play_session(socket_handle, registry)
+    vdimension_registry_free(registry)
     mc_tcp_close(socket_handle)
     return play_result
 
@@ -1848,43 +2189,3 @@ public def status_ping(host: str, port: int64) -> int:
     print("Ping (ms):")
     print(elapsed)
     return 0
-
-def main() -> int:
-    if mc_prepare_stdin() != 0:
-        print("Could not configure terminal input for Play polling")
-        return 1
-    print("Minecraft Java Edition 26.3 client")
-    print("Mode (1=status, 2=offline login):")
-    if mc_stdin_read_line() < 0:
-        print("Could not read client mode")
-        return 1
-    str mode = mc_stdin_line_copy(0)
-    mc_stdin_line_done()
-    print("Server host:")
-    if mc_stdin_read_line() < 0:
-        print("Could not read server host")
-        return 1
-    str host = mc_stdin_line_copy(1)
-    mc_stdin_line_done()
-    print("Server port (default 25565):")
-    if mc_stdin_read_line() < 0:
-        print("Could not read server port")
-        return 1
-    str port_text = mc_stdin_line_copy(2)
-    mc_stdin_line_done()
-    int64[] port = parse_port(port_text)
-    if port[0] != 1:
-        print("Invalid port: enter a number from 1 to 65535")
-        return 1
-    if mode == "2":
-        print("Offline username (no password/account credentials):")
-        if mc_stdin_read_line() < 0:
-            print("Could not read offline username")
-            return 1
-        str username = mc_stdin_line_copy(3)
-        mc_stdin_line_done()
-        return offline_login(host, port[1], username)
-    if mode != "" and mode != "1":
-        print("Invalid mode: choose 1 or 2")
-        return 1
-    return status_ping(host, port[1])

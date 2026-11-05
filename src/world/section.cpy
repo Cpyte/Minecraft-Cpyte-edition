@@ -58,19 +58,20 @@ def sec_blocks_direct_bits() -> int:
 
 
 def sec_biomes_min_bits() -> int:
-    return 3
+    return 1
 
 
 def sec_biomes_max_bits() -> int:
-    return 8
+    return 3
 
 
 def sec_biomes_direct_bits() -> int:
-    return 14
+    return 7
 
 
 struct VSection:
     int y                 # section index in the column, not a block coordinate
+    int non_empty         # non-air block count from a network section, if known
     VContainer* blocks
     VContainer* biomes
     char* block_light     # 2048 bytes, two 4 bit levels per byte
@@ -201,26 +202,41 @@ public def sec_palette_entry(c: VContainer*, index: int) -> int:
 # container writes the single palette entry and no data array, which is exactly
 # what the game does.
 def sec_container_to_nbt(c: VContainer*, name: str) -> VNbt*:
+    VContainer* encoded = c
+    VContainer* temporary = c
+    if vcont_mode(c) == vcont_direct_mode():
+        temporary = vcont_new(vcont_count(c), c.min_bits, 30, c.direct_bits)
+        int at = 0
+        while at < vcont_count(c):
+            vcont_set(temporary, at, vcont_at(c, at))
+            at += 1
+        vcont_compact(temporary)
+        encoded = temporary
+
     VNbt* root = nbt_compound_of(name)
     VNbt* palette = nbt_list_of("palette", nbt_int())
-    int slots = sec_palette_size(c)
+    int slots = sec_palette_size(encoded)
     int i = 0
     while i < slots:
-        nbt_append(palette, nbt_int_of("", sec_palette_entry(c, i)))
+        nbt_append(palette, nbt_int_of("", sec_palette_entry(encoded, i)))
         i += 1
     nbt_append(root, palette)
 
-    int bits = vcont_save_bits_for(c)
+    int bits = vcont_save_bits_for(encoded)
     if bits <= 0:
+        if temporary != c:
+            vcont_free(temporary)
         return root
     VNbt* data = nbt_new(nbt_long_array(), "data")
-    int words = vcont_save_words_for(c, bits)
+    int words = vcont_save_words_for(encoded, bits)
     nbt_set_longs(data, words)
     int w = 0
     while w < words:
-        nbt_set_long_at(data, w, (int64)vcont_save_word(c, w))
+        nbt_set_long_at(data, w, (int64)vcont_save_word(encoded, w))
         w += 1
     nbt_append(root, data)
+    if temporary != c:
+        vcont_free(temporary)
     return root
 
 
@@ -236,11 +252,12 @@ def sec_container_from_nbt(t: VNbt*, c: VContainer*, min_bits: int) -> int:
         return 0
     int bits = vcont_bits_for(slots, min_bits)
     vcont_reset(c, 0)
-    sec_load_palette(nbt_find(t, "palette"), c)
-    if vcont_palette_len(c) <= 0:
-        return 0
+    VNbt* palette = nbt_find(t, "palette")
     VNbt* data = nbt_find(t, "data")
     if data == null:
+        sec_load_palette(palette, c)
+        if vcont_palette_len(c) <= 0:
+            return 0
         # A single valued palette needs no data array: the whole section holds
         # the one entry.
         if vcont_palette_len(c) == 1:
@@ -249,30 +266,49 @@ def sec_container_from_nbt(t: VNbt*, c: VContainer*, min_bits: int) -> int:
         return 0
     if data.kind != nbt_long_array():
         return 0
-    vcont_alloc(c, bits)
+    VContainer* decoded = c
+    VContainer* temporary = c
+    if bits > c.max_bits:
+        temporary = vcont_new(vcont_count(c), min_bits, 30, c.direct_bits)
+        decoded = temporary
+    sec_load_palette(palette, decoded)
+
+    vcont_alloc(decoded, bits)
     int words = nbt_long_len(data)
-    int want = vcont_save_words_for(c, bits)
+    int want = vcont_save_words_for(decoded, bits)
     if words > want:
         words = want
     int w = 0
     while w < words:
-        vcont_set_word(c, w, (uint64)nbt_long_at(data, w))
+        vcont_set_word(decoded, w, (uint64)nbt_long_at(data, w))
         w += 1
+
+    if temporary != c:
+        int at = 0
+        while at < vcont_count(c):
+            vcont_set(c, at, vcont_at(decoded, at))
+            at += 1
+        vcont_free(temporary)
     return 1
 
 
 # ---- the section itself ------------------------------------------------------
 
-public def sec_new(y: int) -> VSection*:
+public def sec_new_for_wire(y: int, block_global_bits: int, biome_global_bits: int) -> VSection*:
     VSection* s = new VSection
     s.y = y
+    s.non_empty = 0
     s.blocks = vcont_new(sec_block_count(), sec_blocks_min_bits(),
-                         sec_blocks_max_bits(), sec_blocks_direct_bits())
+                         sec_blocks_max_bits(), block_global_bits)
     s.biomes = vcont_new(sec_biome_count(), sec_biomes_min_bits(),
-                         sec_biomes_max_bits(), sec_biomes_direct_bits())
+                         sec_biomes_max_bits(), biome_global_bits)
     s.block_light = vt_calloc_char(sec_light_bytes())
     s.sky_light = vt_calloc_char(sec_light_bytes())
     return s
+
+
+public def sec_new(y: int) -> VSection*:
+    return sec_new_for_wire(y, sec_blocks_direct_bits(), sec_biomes_direct_bits())
 
 
 public def sec_free(s: VSection*) -> void:

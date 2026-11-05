@@ -1,0 +1,4 @@
+# Protocol PalettedContainer test bundle.
+use ../src/engine.txt
+harness.cpy
+test_wire_chunk.cpy

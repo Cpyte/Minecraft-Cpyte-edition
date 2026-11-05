@@ -1,0 +1,4 @@
+use ../src/engine.txt
+../src/protocol.cpy
+harness.cpy
+test_registry.cpy

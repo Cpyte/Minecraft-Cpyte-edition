@@ -160,9 +160,10 @@ def test_nbt_round_trip(fails: int*) -> void:
     sec_compact(s)
 
     check_int("block bits", vcont_bits(s.blocks), 5, fails)
-    check_int("biome bits", vcont_bits(s.biomes), 4, fails)
+    check_int("biome global width", vcont_bits(s.biomes), 7, fails)
+    check_int("biome direct mode", vcont_mode(s.biomes), vcont_direct_mode(), fails)
     check_int("block palette", vcont_palette_len(s.blocks), 22, fails)
-    check_int("biome palette", vcont_palette_len(s.biomes), 9, fails)
+    check_int("biome direct palette", vcont_palette_len(s.biomes), 0, fails)
 
     VNbt* root = sec_to_nbt(s, "")
     VBuf* b = vbuf_new(4096)
