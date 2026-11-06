@@ -7,7 +7,11 @@ cd "$HERE"
 
 SMOKE_TESTS=(
   tests/buf.txt
+  tests/nbt.txt
+  tests/palette.txt
+  tests/section.txt
   tests/wire_chunk.txt
+  tests/heightmap.txt
   tests/registry.txt
   tests/chunk_light.txt
 )

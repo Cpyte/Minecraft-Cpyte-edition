@@ -6,9 +6,8 @@ def build_chunk_packet(b: VBuf*, bad_mask: bool, truncated_light: bool,
     vbuf_put_i32_be(b, 0)
     vbuf_put_i32_be(b, 0)
 
-    # Empty anonymous heightmap compound.
-    vbuf_put_u8(b, (uint64)10)
-    vbuf_put_u8(b, (uint64)0)
+    # No heightmaps.
+    vbuf_put_varint(b, 0)
 
     # One section: zero non-air blocks, uniform block and biome containers.
     vbuf_put_varint(b, 6)

@@ -10,5 +10,6 @@ buf/vbuf.cpy
 io/nbt.cpy
 world/palette.cpy
 world/section.cpy
+world/heightmap.cpy
 world/world.cpy
 world/protocol_chunk.cpy

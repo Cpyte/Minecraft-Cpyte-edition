@@ -36,8 +36,15 @@ silently interpreting chunks as Overworld.
 
 Chunk packets now validate and skip block-entity NBT records and decode the
 sky/block light masks and arrays, applying in-range section light bytes to the
-loaded column. Heightmap NBT is validated and skipped, not retained or decoded
-into per-block height values. Block entities are not retained or rendered, and
+loaded column. Chunk heightmaps are decoded from the varint-counted list of
+heightmap type ids and packed long arrays: the types the engine stores
+(MOTION_BLOCKING and WORLD_SURFACE) are unpacked from 9-bit longs into
+per-block absolute heights kept with the chunk column, a type it does not
+store is walked and dropped, a stored type the server leaves out reads as
+zero, and a stored type whose long count is not 36 rejects the chunk because
+the packing width would be unknown. Heightmaps are not used to derive block
+presence, so `vworld_height_at` reports only what the server sent. Block
+entities are not retained or rendered, and
 registry values are not mapped to renderable block/biome definitions. The
 standalone NBT section serializer is a Vortex representation, not a complete
 Minecraft chunk-save serializer. Play packet handling is partial; the

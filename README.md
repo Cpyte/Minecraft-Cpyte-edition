@@ -12,8 +12,12 @@ compiler itself is unchanged.
 Play-state chunk packets decode sections using the dimension bounds and biome
 registry size received during Configuration. The active dimension type is
 selected from the Play login packet rather than assuming the Overworld. Chunk
-lighting is decoded into section data; heightmaps are validated and skipped,
-and block entities are validated but not retained. The block-state global
+lighting is decoded into section data. Heightmaps arrive as a varint count of
+heightmap type ids each followed by a packed long array; type 4
+(MOTION_BLOCKING) and type 1 (WORLD_SURFACE) are unpacked into per-column
+absolute heights and queried through `vworld_height_at`, an unstored type is
+walked but dropped, and a stored type whose long count is not the expected 36
+rejects the chunk. Block entities are validated but not retained. The block-state global
 width remains fixed to the target protocol profile; custom or modded block
 registries are not parsed. Rendering and world simulation are not connected,
 and most Play packets are not implemented.

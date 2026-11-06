@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a Vortex engine target with the Cpyte compiler.
+# Build a Vortex target with the Cpyte compiler.
 #
 #   ./build.sh --run src/backend.txt  # protocol client + voxel section engine
 #   ./build.sh tests/buf.txt          # bundle the test manifest -> dist/buf.exe
@@ -37,11 +37,8 @@ case "$TARGET" in
     SOURCE="build/$NAME.cpy"
     "$PYTHON" tools/bundle.py "$TARGET" "$SOURCE"
     ;;
-  *.cpy)
-    SOURCE="$TARGET"
-    ;;
   *)
-    SOURCE="$TARGET.cpy"
+    SOURCE="$TARGET"
     ;;
 esac
 if [ ! -f "$SOURCE" ]; then
@@ -62,6 +59,16 @@ esac
 if [ -d "$CPYTE_HOME/source" ]; then
   export PYTHONPATH="$CPYTE_HOME/source${PYTHONPATH:+:$PYTHONPATH}"
 fi
+
+# Cpyte's C step cannot overwrite an existing object file: the second build of
+# a target fails with "can't create <name>.runpy.o: Invalid argument", so the
+# per-target objects from the previous build go first.
+case "$SOURCE" in
+  */*) SOURCE_DIR="${SOURCE%/*}" ;;
+  *) SOURCE_DIR="." ;;
+esac
+rm -f "$SOURCE_DIR/$NAME.o" "$SOURCE_DIR/$NAME.gc.o" \
+     "$SOURCE_DIR/$NAME.runpy.o" "$SOURCE_DIR/$NAME.runtime.o"
 
 # Avoid the current compiler's LLVM loop-pass assertion, including on macOS's
 # default Bash 3.2 where expanding an empty array under `set -u` fails.

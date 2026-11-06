@@ -1403,6 +1403,56 @@ def chunk_decode_light_and_entities(world: VWorld*, body: int64[],
     return 0
 
 
+# Chunk heightmaps: a varint count of entries, each one a varint heightmap
+# type id followed by a varint-counted big endian long array of 256 nine-bit
+# absolute heights. Types the engine does not store are still walked, so a
+# server that sends ocean floor data does not break the chunk, but a known
+# type with the wrong number of longs is rejected rather than misread.
+def chunk_heightmap_kind(type_id: int64) -> int:
+    if type_id == hm_wire_motion_blocking():
+        return hm_motion_blocking()
+    if type_id == hm_wire_world_surface():
+        return hm_world_surface()
+    return -1
+
+
+public def chunk_read_heightmaps(data: int64[], offset: int64,
+                                 values: int*) -> int64[]:
+    if values == null or offset < 0:
+        return decode_result(-1, 0, offset)
+    int64[] count = decode_varint(data, offset)
+    if count[0] != 1 or count[1] < 0 or count[1] > hm_wire_kind_count():
+        return decode_result(-1, 0, offset)
+    int64 position = count[2]
+    int64 index = 0
+    while index < count[1]:
+        int64[] type_id = decode_varint(data, position)
+        if type_id[0] != 1 or type_id[1] < 0:
+            return decode_result(-1, index, position)
+        position = type_id[2]
+        int64[] longs = decode_varint(data, position)
+        int64 packed_bytes = hm_long_count() * 8
+        if longs[0] != 1 or longs[1] != hm_long_count() or longs[2] + packed_bytes > len(data):
+            return decode_result(-1, index, position)
+        position = longs[2]
+        int64[] words = new int64[hm_long_count()]
+        int64 word_index = 0
+        while word_index < hm_long_count():
+            int64 word = 0
+            int64 byte_index = 0
+            while byte_index < 8:
+                word = word << 8 | data[position + word_index * 8 + byte_index]
+                byte_index = byte_index + 1
+            words[word_index] = word
+            word_index = word_index + 1
+        position = position + packed_bytes
+        int kind = chunk_heightmap_kind(type_id[1])
+        if kind >= 0 and hm_unpack(words, kind, values) == 0:
+            return decode_result(-1, index, position)
+        index = index + 1
+    return decode_result(1, index, position)
+
+
 public def decode_chunk_sections(world: VWorld*, body: int64[],
                                  packet_offset: int64) -> int:
     if world == null or packet_offset < 0 or packet_offset + 8 > len(body):
@@ -1410,16 +1460,16 @@ public def decode_chunk_sections(world: VWorld*, body: int64[],
     int64 chunk_x = decode_be_int32(body, packet_offset)
     int64 chunk_z = decode_be_int32(body, packet_offset + 4)
     int64 heightmaps_offset = packet_offset + 8
-    if heightmaps_offset >= len(body) or body[heightmaps_offset] != 10:
-        print("Chunk packet has no heightmap compound")
-        return 1
-    int64[] heightmaps_end = skip_nbt_payload(body, 10, heightmaps_offset + 1, 0)
-    if heightmaps_end[0] != 1:
+    int* heights = hm_new()
+    int64[] heightmaps = chunk_read_heightmaps(body, heightmaps_offset, heights)
+    if heightmaps[0] != 1:
         print("Malformed chunk heightmaps")
+        hm_free(heights)
         return 1
-    int64[] data_length = decode_varint(body, heightmaps_end[2])
+    int64[] data_length = decode_varint(body, heightmaps[2])
     if data_length[0] != 1 or data_length[1] < 0 or data_length[2] + data_length[1] > len(body):
         print("Malformed chunk section-data length")
+        hm_free(heights)
         return 1
     VBuf* section_data = vbuf_new((int)data_length[1])
     int64 index = 0
@@ -1434,15 +1484,20 @@ public def decode_chunk_sections(world: VWorld*, body: int64[],
     vbuf_free(section_data)
     if sections_ok == 0 or sections == null:
         print("Malformed or unsupported chunk section palettes")
+        hm_free(heights)
         return 1
     int64 tail_offset = data_length[2] + data_length[1]
     if chunk_decode_light_and_entities(world, body, tail_offset, sections) != 0:
         vworld_free_column(sections, world.section_count)
+        hm_free(heights)
         return 1
     if vworld_replace_sections(world, (int)chunk_x, (int)chunk_z, sections) == 0:
         vworld_free_column(sections, world.section_count)
+        hm_free(heights)
         print("Loaded chunk capacity reached")
         return 1
+    if vworld_set_heightmaps(world, (int)chunk_x, (int)chunk_z, heights) == 0:
+        hm_free(heights)
     print(f"Decoded chunk ({chunk_x}, {chunk_z}) into {world.section_count} sections with lighting")
     return 0
 

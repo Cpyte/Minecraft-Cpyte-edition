@@ -13,6 +13,7 @@ struct VWorld:
     int* chunk_x
     int* chunk_z
     char* columns
+    char* heightmaps
 
 
 struct VDimensionRegistry:
@@ -134,6 +135,7 @@ public def vworld_new(capacity: int, min_section: int, section_count: int,
     world.chunk_x = vt_calloc_int(capacity)
     world.chunk_z = vt_calloc_int(capacity)
     world.columns = vt_calloc_ptrs(capacity)
+    world.heightmaps = vt_calloc_ptrs(capacity)
     return world
 
 
@@ -143,10 +145,12 @@ public def vworld_free(world: VWorld*) -> void:
     int i = 0
     while i < world.count:
         vworld_free_column((char*)vt_ptr_get(world.columns, i), world.section_count)
+        hm_free((int*)vt_ptr_get(world.heightmaps, i))
         i += 1
     vt_free((void*)world.chunk_x)
     vt_free((void*)world.chunk_z)
     vt_free((void*)world.columns)
+    vt_free((void*)world.heightmaps)
     del world
 
 
@@ -169,21 +173,45 @@ public def vworld_set_dimension(world: VWorld*, min_section: int,
     return 1
 
 
+# The column slot for (x, z), inserting an empty one when the chunk is new and
+# returning -1 once the store is full. A fresh slot has neither sections nor
+# heightmaps, so either half of the chunk packet may arrive first.
+def vworld_slot(world: VWorld*, x: int, z: int) -> int:
+    int index = vworld_find(world, x, z)
+    if index >= 0:
+        return index
+    if world.count >= world.capacity:
+        return -1
+    index = world.count
+    world.count += 1
+    vt_iset(world.chunk_x, index, x)
+    vt_iset(world.chunk_z, index, z)
+    return index
+
+
 public def vworld_replace_sections(world: VWorld*, x: int, z: int,
                                    sections: char*) -> int:
     if world == null or sections == null:
         return 0
-    int index = vworld_find(world, x, z)
+    int index = vworld_slot(world, x, z)
     if index < 0:
-        if world.count >= world.capacity:
-            return 0
-        index = world.count
-        world.count += 1
-        vt_iset(world.chunk_x, index, x)
-        vt_iset(world.chunk_z, index, z)
-    else:
-        vworld_free_column((char*)vt_ptr_get(world.columns, index), world.section_count)
+        return 0
+    vworld_free_column((char*)vt_ptr_get(world.columns, index), world.section_count)
     vt_ptr_set(world.columns, index, (void*)sections)
+    return 1
+
+
+# Takes ownership of `values`, one packed heightmap column of `hm_values()`
+# entries, and frees whatever the chunk held before.
+public def vworld_set_heightmaps(world: VWorld*, x: int, z: int,
+                                 values: int*) -> int:
+    if world == null or values == null:
+        return 0
+    int index = vworld_slot(world, x, z)
+    if index < 0:
+        return 0
+    hm_free((int*)vt_ptr_get(world.heightmaps, index))
+    vt_ptr_set(world.heightmaps, index, (void*)values)
     return 1
 
 
@@ -194,14 +222,17 @@ public def vworld_unload_chunk(world: VWorld*, x: int, z: int) -> int:
     if index < 0:
         return 0
     vworld_free_column((char*)vt_ptr_get(world.columns, index), world.section_count)
+    hm_free((int*)vt_ptr_get(world.heightmaps, index))
     int i = index + 1
     while i < world.count:
         vt_iset(world.chunk_x, i - 1, vt_iget(world.chunk_x, i))
         vt_iset(world.chunk_z, i - 1, vt_iget(world.chunk_z, i))
         vt_ptr_set(world.columns, i - 1, vt_ptr_get(world.columns, i))
+        vt_ptr_set(world.heightmaps, i - 1, vt_ptr_get(world.heightmaps, i))
         i += 1
     world.count -= 1
     vt_ptr_set(world.columns, world.count, null)
+    vt_ptr_set(world.heightmaps, world.count, null)
     return 1
 
 
@@ -214,6 +245,8 @@ public def vworld_section(world: VWorld*, chunk_x: int, chunk_z: int,
     if column_index < 0 or section_index < 0 or section_index >= world.section_count:
         return null
     char* sections = (char*)vt_ptr_get(world.columns, column_index)
+    if sections == null:
+        return null
     return (VSection*)vt_ptr_get(sections, section_index)
 
 
@@ -259,3 +292,29 @@ public def vworld_biome_at(world: VWorld*, x: int, y: int, z: int) -> int:
     if section == null:
         return 0
     return sec_biome_at(section, local_x / 4, local_y / 4, local_z / 4)
+
+
+# The stored height for one world block column, or -1 while the chunk is not
+# loaded or the server sent no heightmap of that kind. Heights are absolute
+# world Y as packed on the wire, so a negative minimum build height does not
+# shift them.
+public def vworld_height_at(world: VWorld*, kind: int, x: int, z: int) -> int:
+    if world == null:
+        return -1
+    int local_x = x % 16
+    int chunk_x = x / 16
+    if local_x < 0:
+        chunk_x -= 1
+        local_x += 16
+    int local_z = z % 16
+    int chunk_z = z / 16
+    if local_z < 0:
+        chunk_z -= 1
+        local_z += 16
+    int column_index = vworld_find(world, chunk_x, chunk_z)
+    if column_index < 0:
+        return -1
+    int* values = (int*)vt_ptr_get(world.heightmaps, column_index)
+    if values == null:
+        return -1
+    return hm_get(values, kind, local_x, local_z)

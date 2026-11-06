@@ -1,7 +1,7 @@
 # Vortex engine - generated bundle. Do not edit: this file is assembled from
 # the modules listed below by tools/bundle.py.
 #
-#   native.cpy, core.cpy, strings.cpy, vbuf.cpy, nbt.cpy, palette.cpy, section.cpy, world.cpy, protocol_chunk.cpy, protocol.cpy, harness.cpy, test_chunk_light.cpy
+#   native.cpy, core.cpy, strings.cpy, vbuf.cpy, nbt.cpy, palette.cpy, section.cpy, heightmap.cpy, world.cpy, protocol_chunk.cpy, protocol.cpy, harness.cpy, test_chunk_light.cpy
 
 import stdlib
 import "../src/network.c"
@@ -2479,6 +2479,151 @@ public def sec_from_nbt(t: VNbt*, y: int) -> VSection*:
     return s
 
 
+# ===== heightmap.cpy =====
+# Vortex engine - chunk column heightmaps.
+#
+# A server sends one height value per block column, packed 9 bits at a time
+# least significant bit first across a big endian long array, so 256 values
+# occupy 36 longs. The values are absolute world Y, which is why a dimension
+# that starts below y = 0 still reports heights above its minimum: the packing
+# carries no offset. Cpyte shifts and masks `int64` correctly but compares an
+# unsigned value as signed, so the unpack loops stay in `int64` and only ever
+# test the low nine bits after the mask.
+
+
+public def hm_cells() -> int:
+    return 256
+
+
+public def hm_kind_count() -> int:
+    return 2
+
+
+# The kinds this engine stores. The wire names each one with its own id, so
+# these numbers only index the stored column.
+public def hm_motion_blocking() -> int:
+    return 0
+
+
+public def hm_world_surface() -> int:
+    return 1
+
+
+# `Heightmap.Type` ids as they appear in a chunk packet. The other types the
+# server may send - world surface and ocean floor before world generation -
+# are walked but not stored.
+public def hm_wire_world_surface() -> int64:
+    return (int64)1
+
+
+public def hm_wire_motion_blocking() -> int64:
+    return (int64)4
+
+
+public def hm_wire_kind_count() -> int64:
+    return (int64)6
+
+
+public def hm_bits() -> int:
+    return 9
+
+
+public def hm_value_mask() -> int64:
+    return (int64)511
+
+
+public def hm_long_count() -> int:
+    return (hm_cells() * hm_bits() + 63) / 64
+
+
+public def hm_values() -> int:
+    return hm_cells() * hm_kind_count()
+
+
+public def hm_kind_offset(kind: int) -> int:
+    if kind < 0 or kind >= hm_kind_count():
+        return -1
+    return kind * hm_cells()
+
+
+public def hm_new() -> int*:
+    return vt_calloc_int(hm_values())
+
+
+public def hm_free(values: int*) -> void:
+    if values != null:
+        vt_free((void*)values)
+
+
+public def hm_index(kind: int, x: int, z: int) -> int:
+    if x < 0 or x >= 16 or z < 0 or z >= 16:
+        return -1
+    int base = hm_kind_offset(kind)
+    if base < 0:
+        return -1
+    return base + z * 16 + x
+
+
+public def hm_set(values: int*, kind: int, x: int, z: int, height: int) -> int:
+    int slot = hm_index(kind, x, z)
+    if values == null or slot < 0:
+        return 0
+    vt_iset(values, slot, height)
+    return 1
+
+
+public def hm_get(values: int*, kind: int, x: int, z: int) -> int:
+    int slot = hm_index(kind, x, z)
+    if values == null or slot < 0:
+        return -1
+    return vt_iget(values, slot)
+
+
+# Unpacks one kind's 36 longs into `cells` heights at `kind * 256`.
+public def hm_unpack(longs: int64[], kind: int, values: int*) -> int:
+    int base = hm_kind_offset(kind)
+    if values == null or base < 0:
+        return 0
+    int i = 0
+    while i < hm_cells():
+        int bit = i * hm_bits()
+        int word = bit / 64
+        int shift = bit % 64
+        int64 raw = longs[word] >> shift
+        if shift > 64 - hm_bits():
+            # The field continues in the next long. `>>` sign extends, so the
+            # part held by this word has to be masked before the rest is
+            # OR-ed in, or the extension overwrites the high field bits.
+            int keep = 64 - shift
+            raw = (raw & (((int64)1 << keep) - (int64)1)) | (longs[word + 1] << keep)
+        vt_iset(values, base + i, (int)(raw & hm_value_mask()))
+        i += 1
+    return 1
+
+
+# Packs one kind's heights back into longs; the inverse, used by the tests and
+# by any future serverbound heightmap.
+public def hm_pack(values: int*, kind: int, longs: int64[]) -> int:
+    int base = hm_kind_offset(kind)
+    if values == null or base < 0:
+        return 0
+    int i = 0
+    while i < hm_long_count():
+        longs[i] = (int64)0
+        i += 1
+    i = 0
+    while i < hm_cells():
+        int bit = i * hm_bits()
+        int word = bit / 64
+        int shift = bit % 64
+        int64 value = (int64)vt_iget(values, base + i) & hm_value_mask()
+        longs[word] = longs[word] | (value << shift)
+        if shift > 64 - hm_bits():
+            longs[word + 1] = longs[word + 1] | (value >> (64 - shift))
+        i += 1
+    return 1
+
+
 # ===== world.cpy =====
 # Vortex engine - bounded loaded-chunk store.
 
@@ -2493,6 +2638,7 @@ struct VWorld:
     int* chunk_x
     int* chunk_z
     char* columns
+    char* heightmaps
 
 
 struct VDimensionRegistry:
@@ -2614,6 +2760,7 @@ public def vworld_new(capacity: int, min_section: int, section_count: int,
     world.chunk_x = vt_calloc_int(capacity)
     world.chunk_z = vt_calloc_int(capacity)
     world.columns = vt_calloc_ptrs(capacity)
+    world.heightmaps = vt_calloc_ptrs(capacity)
     return world
 
 
@@ -2623,10 +2770,12 @@ public def vworld_free(world: VWorld*) -> void:
     int i = 0
     while i < world.count:
         vworld_free_column((char*)vt_ptr_get(world.columns, i), world.section_count)
+        hm_free((int*)vt_ptr_get(world.heightmaps, i))
         i += 1
     vt_free((void*)world.chunk_x)
     vt_free((void*)world.chunk_z)
     vt_free((void*)world.columns)
+    vt_free((void*)world.heightmaps)
     del world
 
 
@@ -2649,21 +2798,45 @@ public def vworld_set_dimension(world: VWorld*, min_section: int,
     return 1
 
 
+# The column slot for (x, z), inserting an empty one when the chunk is new and
+# returning -1 once the store is full. A fresh slot has neither sections nor
+# heightmaps, so either half of the chunk packet may arrive first.
+def vworld_slot(world: VWorld*, x: int, z: int) -> int:
+    int index = vworld_find(world, x, z)
+    if index >= 0:
+        return index
+    if world.count >= world.capacity:
+        return -1
+    index = world.count
+    world.count += 1
+    vt_iset(world.chunk_x, index, x)
+    vt_iset(world.chunk_z, index, z)
+    return index
+
+
 public def vworld_replace_sections(world: VWorld*, x: int, z: int,
                                    sections: char*) -> int:
     if world == null or sections == null:
         return 0
-    int index = vworld_find(world, x, z)
+    int index = vworld_slot(world, x, z)
     if index < 0:
-        if world.count >= world.capacity:
-            return 0
-        index = world.count
-        world.count += 1
-        vt_iset(world.chunk_x, index, x)
-        vt_iset(world.chunk_z, index, z)
-    else:
-        vworld_free_column((char*)vt_ptr_get(world.columns, index), world.section_count)
+        return 0
+    vworld_free_column((char*)vt_ptr_get(world.columns, index), world.section_count)
     vt_ptr_set(world.columns, index, (void*)sections)
+    return 1
+
+
+# Takes ownership of `values`, one packed heightmap column of `hm_values()`
+# entries, and frees whatever the chunk held before.
+public def vworld_set_heightmaps(world: VWorld*, x: int, z: int,
+                                 values: int*) -> int:
+    if world == null or values == null:
+        return 0
+    int index = vworld_slot(world, x, z)
+    if index < 0:
+        return 0
+    hm_free((int*)vt_ptr_get(world.heightmaps, index))
+    vt_ptr_set(world.heightmaps, index, (void*)values)
     return 1
 
 
@@ -2674,14 +2847,17 @@ public def vworld_unload_chunk(world: VWorld*, x: int, z: int) -> int:
     if index < 0:
         return 0
     vworld_free_column((char*)vt_ptr_get(world.columns, index), world.section_count)
+    hm_free((int*)vt_ptr_get(world.heightmaps, index))
     int i = index + 1
     while i < world.count:
         vt_iset(world.chunk_x, i - 1, vt_iget(world.chunk_x, i))
         vt_iset(world.chunk_z, i - 1, vt_iget(world.chunk_z, i))
         vt_ptr_set(world.columns, i - 1, vt_ptr_get(world.columns, i))
+        vt_ptr_set(world.heightmaps, i - 1, vt_ptr_get(world.heightmaps, i))
         i += 1
     world.count -= 1
     vt_ptr_set(world.columns, world.count, null)
+    vt_ptr_set(world.heightmaps, world.count, null)
     return 1
 
 
@@ -2694,6 +2870,8 @@ public def vworld_section(world: VWorld*, chunk_x: int, chunk_z: int,
     if column_index < 0 or section_index < 0 or section_index >= world.section_count:
         return null
     char* sections = (char*)vt_ptr_get(world.columns, column_index)
+    if sections == null:
+        return null
     return (VSection*)vt_ptr_get(sections, section_index)
 
 
@@ -2739,6 +2917,32 @@ public def vworld_biome_at(world: VWorld*, x: int, y: int, z: int) -> int:
     if section == null:
         return 0
     return sec_biome_at(section, local_x / 4, local_y / 4, local_z / 4)
+
+
+# The stored height for one world block column, or -1 while the chunk is not
+# loaded or the server sent no heightmap of that kind. Heights are absolute
+# world Y as packed on the wire, so a negative minimum build height does not
+# shift them.
+public def vworld_height_at(world: VWorld*, kind: int, x: int, z: int) -> int:
+    if world == null:
+        return -1
+    int local_x = x % 16
+    int chunk_x = x / 16
+    if local_x < 0:
+        chunk_x -= 1
+        local_x += 16
+    int local_z = z % 16
+    int chunk_z = z / 16
+    if local_z < 0:
+        chunk_z -= 1
+        local_z += 16
+    int column_index = vworld_find(world, chunk_x, chunk_z)
+    if column_index < 0:
+        return -1
+    int* values = (int*)vt_ptr_get(world.heightmaps, column_index)
+    if values == null:
+        return -1
+    return hm_get(values, kind, local_x, local_z)
 
 
 # ===== protocol_chunk.cpy =====
@@ -4266,6 +4470,56 @@ def chunk_decode_light_and_entities(world: VWorld*, body: int64[],
     return 0
 
 
+# Chunk heightmaps: a varint count of entries, each one a varint heightmap
+# type id followed by a varint-counted big endian long array of 256 nine-bit
+# absolute heights. Types the engine does not store are still walked, so a
+# server that sends ocean floor data does not break the chunk, but a known
+# type with the wrong number of longs is rejected rather than misread.
+def chunk_heightmap_kind(type_id: int64) -> int:
+    if type_id == hm_wire_motion_blocking():
+        return hm_motion_blocking()
+    if type_id == hm_wire_world_surface():
+        return hm_world_surface()
+    return -1
+
+
+public def chunk_read_heightmaps(data: int64[], offset: int64,
+                                 values: int*) -> int64[]:
+    if values == null or offset < 0:
+        return decode_result(-1, 0, offset)
+    int64[] count = decode_varint(data, offset)
+    if count[0] != 1 or count[1] < 0 or count[1] > hm_wire_kind_count():
+        return decode_result(-1, 0, offset)
+    int64 position = count[2]
+    int64 index = 0
+    while index < count[1]:
+        int64[] type_id = decode_varint(data, position)
+        if type_id[0] != 1 or type_id[1] < 0:
+            return decode_result(-1, index, position)
+        position = type_id[2]
+        int64[] longs = decode_varint(data, position)
+        int64 packed_bytes = hm_long_count() * 8
+        if longs[0] != 1 or longs[1] != hm_long_count() or longs[2] + packed_bytes > len(data):
+            return decode_result(-1, index, position)
+        position = longs[2]
+        int64[] words = new int64[hm_long_count()]
+        int64 word_index = 0
+        while word_index < hm_long_count():
+            int64 word = 0
+            int64 byte_index = 0
+            while byte_index < 8:
+                word = word << 8 | data[position + word_index * 8 + byte_index]
+                byte_index = byte_index + 1
+            words[word_index] = word
+            word_index = word_index + 1
+        position = position + packed_bytes
+        int kind = chunk_heightmap_kind(type_id[1])
+        if kind >= 0 and hm_unpack(words, kind, values) == 0:
+            return decode_result(-1, index, position)
+        index = index + 1
+    return decode_result(1, index, position)
+
+
 public def decode_chunk_sections(world: VWorld*, body: int64[],
                                  packet_offset: int64) -> int:
     if world == null or packet_offset < 0 or packet_offset + 8 > len(body):
@@ -4273,16 +4527,16 @@ public def decode_chunk_sections(world: VWorld*, body: int64[],
     int64 chunk_x = decode_be_int32(body, packet_offset)
     int64 chunk_z = decode_be_int32(body, packet_offset + 4)
     int64 heightmaps_offset = packet_offset + 8
-    if heightmaps_offset >= len(body) or body[heightmaps_offset] != 10:
-        print("Chunk packet has no heightmap compound")
-        return 1
-    int64[] heightmaps_end = skip_nbt_payload(body, 10, heightmaps_offset + 1, 0)
-    if heightmaps_end[0] != 1:
+    int* heights = hm_new()
+    int64[] heightmaps = chunk_read_heightmaps(body, heightmaps_offset, heights)
+    if heightmaps[0] != 1:
         print("Malformed chunk heightmaps")
+        hm_free(heights)
         return 1
-    int64[] data_length = decode_varint(body, heightmaps_end[2])
+    int64[] data_length = decode_varint(body, heightmaps[2])
     if data_length[0] != 1 or data_length[1] < 0 or data_length[2] + data_length[1] > len(body):
         print("Malformed chunk section-data length")
+        hm_free(heights)
         return 1
     VBuf* section_data = vbuf_new((int)data_length[1])
     int64 index = 0
@@ -4297,15 +4551,20 @@ public def decode_chunk_sections(world: VWorld*, body: int64[],
     vbuf_free(section_data)
     if sections_ok == 0 or sections == null:
         print("Malformed or unsupported chunk section palettes")
+        hm_free(heights)
         return 1
     int64 tail_offset = data_length[2] + data_length[1]
     if chunk_decode_light_and_entities(world, body, tail_offset, sections) != 0:
         vworld_free_column(sections, world.section_count)
+        hm_free(heights)
         return 1
     if vworld_replace_sections(world, (int)chunk_x, (int)chunk_z, sections) == 0:
         vworld_free_column(sections, world.section_count)
+        hm_free(heights)
         print("Loaded chunk capacity reached")
         return 1
+    if vworld_set_heightmaps(world, (int)chunk_x, (int)chunk_z, heights) == 0:
+        hm_free(heights)
     print(f"Decoded chunk ({chunk_x}, {chunk_z}) into {world.section_count} sections with lighting")
     return 0
 
@@ -5102,9 +5361,8 @@ def build_chunk_packet(b: VBuf*, bad_mask: bool, truncated_light: bool,
     vbuf_put_i32_be(b, 0)
     vbuf_put_i32_be(b, 0)
 
-    # Empty anonymous heightmap compound.
-    vbuf_put_u8(b, (uint64)10)
-    vbuf_put_u8(b, (uint64)0)
+    # No heightmaps.
+    vbuf_put_varint(b, 0)
 
     # One section: zero non-air blocks, uniform block and biome containers.
     vbuf_put_varint(b, 6)

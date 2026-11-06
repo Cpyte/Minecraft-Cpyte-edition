@@ -50,12 +50,17 @@ def strip_module_headers(text: str) -> str:
 
 
 def c_imports(sources: list[pathlib.Path], output_dir: pathlib.Path) -> str:
-    """Keep C imports and rewrite them relative to the generated bundle."""
+    """Keep C imports and rewrite them relative to the generated bundle.
+
+    The path is spelled with forward slashes even on Windows: Cpyte's lexer
+    reads a backslash in a quoted import as an escape character, so
+    `import "..\\src\\network.c"` resolves to `..src`.
+    """
     imports: set[str] = set()
     for source in sources:
         for match in re.finditer(r'(?m)^import\s+"([^"]+\.c)"\s*$', source.read_text(encoding="utf-8")):
             target = (source.parent / match.group(1)).resolve()
-            relative = os.path.relpath(target, output_dir)
+            relative = os.path.relpath(target, output_dir).replace(os.sep, "/")
             imports.add(f'import "{relative}"')
     return "\n".join(sorted(imports))
 

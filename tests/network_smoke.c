@@ -18,6 +18,7 @@ typedef uintptr_t peer_fd;
 #else
 #include <errno.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 typedef int peer_fd;
@@ -247,7 +248,6 @@ int main(void) {
     mc_stdin_line_done();
     check("poll reports closed stdin", (mc_poll_events(-1) & 4) != 0);
 
-    puts("mark: misc");
     /* --- misc ------------------------------------------------------------ */
     check("clock moves", mc_time_millis() > 1700000000000LL);
     check("string length", mc_string_length("abc") == 3);

@@ -1,0 +1,490 @@
+
+==> tests/buf.txt
+bundled 12 modules -> build\buf.cpy
+\u25b6 Compiling build/buf.cpy ...
+Wrote dist/buf.exe
+built: dist/buf.exe
+vortex codec tests
+strings:
+  ok   slice length
+  ok   slice content
+  ok   slice clamps
+  ok   trim
+  ok   find
+  ok   find absent
+  ok   field 0
+  ok   field 1
+  ok   empty field kept
+  ok   field past end empty
+  ok   field count
+  ok   code at
+  ok   parse int
+  ok   parse int spaces
+  ok   parse junk
+  ok   parse bool
+  ok   parse int ok flag
+  ok   parse int ok set
+  ok   parse int fail flag
+  ok   parse int fail clears
+  ok   hash differs
+  ok   hash stable
+  ok   vstr length
+  ok   vstr grew
+  ok   vstr content head
+varint:
+  ok   300 is two groups
+  ok   300 round trip
+  ok   zero is one group
+  ok   zero round trip
+  ok   minus one is five groups
+  ok   minus one round trip
+  ok   max int round trip
+  ok   min int round trip
+  ok   varlong five groups
+  ok   varlong wide round trip
+  ok   minus one varlong is ten groups
+  ok   minus one varlong round trip
+  ok   varlong negative ok
+  ok   varlong negative round trip
+  ok   truncated varint flagged
+fixed width:
+  ok   be byte count
+  ok   be writes high byte first
+  ok   be round trip
+  ok   le writes low byte first
+  ok   le round trip
+  ok   i64 be round trip
+  ok   u64 be round trip
+  ok   string round trip
+  ok   string read was complete
+  ok   overlong string flagged
+  ok   empty read is zero
+  ok   empty read keeps pos
+growth:
+  ok   length after 5000
+  ok   capacity covers length
+  ok   doubling kept
+  ok   spot check tail
+vortex codec tests: all passed
+
+==> tests/nbt.txt
+bundled 12 modules -> build\nbt.cpy
+\u25b6 Compiling build/nbt.cpy ...
+Wrote dist/nbt.exe
+built: dist/nbt.exe
+nbt layout:
+  ok   tag int size
+  ok   kind byte
+  ok   name length high
+  ok   name length low
+  ok   name first byte
+  ok   payload high bytes
+  ok   payload big endian
+  ok   empty compound size
+  ok   compound terminator
+nbt scalars:
+  ok   root parsed
+  ok   root name
+  ok   root kind
+  ok   child count
+  ok   byte
+  ok   short
+  ok   int
+  ok   long
+  ok   string
+  ok   float
+  ok   double
+  ok   missing child
+  ok   absent child is null
+  ok   re-encode is stable
+  ok   re-encoded bytes match
+nbt arrays:
+  ok   arrays parsed
+  ok   byte array length
+  ok   byte array keeps 250
+  ok   byte array keeps -1
+  ok   int array length
+  ok   int array value
+  ok   int array negative
+  ok   long array length
+  ok   long array -1
+  ok   long array wide
+  ok   out of range int
+nbt palette shape:
+  ok   section parsed
+  ok   section y
+  ok   block_states found
+  ok   palette is a list
+  ok   palette entries
+  ok   entry name
+  ok   entry id
+  ok   index guard
+  ok   negative index guard
+  ok   list element kind
+nbt truncation:
+  ok   all prefixes rejected
+  ok   empty input
+vortex nbt tests: all passed
+
+==> tests/palette.txt
+bundled 12 modules -> build\palette.cpy
+\u25b6 Compiling build/palette.cpy ...
+Wrote dist/palette.exe
+built: dist/palette.exe
+uniform start:
+  ok   mode
+  ok   bits
+  ok   word count
+  ok   palette len
+  ok   entry 0
+  ok   entry 4095
+  ok   uniform value
+  ok   is uniform
+  ok   same value stays uniform
+  ok   still no words
+  ok   left uniform
+  ok   starts at min bits
+  ok   palette holds old and new
+  ok   palette 0
+  ok   palette 1
+  ok   changed entry
+  ok   neighbour entry
+  ok   far entry
+  ok   no longer uniform
+padded packing:
+  ok   4 bits
+  ok   5 bits
+  ok   6 bits
+  ok   7 bits
+  ok   8 bits
+  ok   14 bits
+  ok   16 bits
+  ok   3 bits over 64
+  ok   9 bits over 64
+  ok   zero width
+  ok   entry 16 in word 1
+  ok   word 0 left empty
+  ok   entry 15 in word 0
+  ok   word 1 left empty
+width growth:
+  ok   16 palette entries
+  ok   still 4 bits
+  ok   256 words
+  ok   17 palette entries
+  ok   repacked to 5 bits
+  ok   342 words
+  ok   first entry kept
+  ok   last entry kept
+  ok   new entry
+  ok   untouched entry
+  ok   word 0 unchanged
+  ok   entry 12 reads back
+  ok   entry 11 unaffected
+direct promotion:
+  ok   full palette
+  ok   widest indirect
+  ok   mode
+  ok   palette dropped
+  ok   direct mode
+  ok   direct width
+  ok   1024 words
+  ok   new value
+  ok   first promoted entry
+  ok   last promoted entry
+  ok   entry before the new one
+  ok   entry after the new one
+  ok   distinct values
+compaction:
+  ok   5 bits for 21 values
+  ok   palette
+  ok   back to 4 bits
+  ok   two palette entries
+  ok   256 words
+  ok   held entry
+  ok   empty entry
+  ok   last held entry
+  ok   single valued again
+  ok   try uniform collapses
+  ok   uniform mode
+  ok   no words
+compaction with too many values:
+  ok   257 values do not fit 8 bits
+  ok   16 bit words
+  ok   entry kept
+  ok   new value kept
+  ok   indirect after shrinking
+  ok   two values
+  ok   4 bits
+  ok   the value that stayed
+  ok   a cleared entry
+direct save form:
+  ok   promoted
+  ok   14 bit direct
+  ok   no palette
+  ok   five distinct values
+  ok   prepare fits 3 bits
+  ok   indirect again
+  ok   palette rebuilt
+  ok   width recorded
+  ok   entry 0
+  ok   entry 200
+  ok   entry 400
+  ok   entry 600
+  ok   empty entry
+  ok   two bits cannot index five values
+  ok   container untouched
+  ok   entry still readable
+biome container:
+  ok   min bits
+  ok   4 words for 64 entries
+  ok   written biome
+  ok   neighbour biome
+  ok   65 values at 7 bits
+  ok   8 words
+  ok   entry 5 overwritten by the sweep
+  ok   round trip mismatches
+save and reload:
+  ok   41 values at 6 bits
+  ok   palette
+  ok   words
+  ok   loaded width
+  ok   loaded palette
+  ok   loaded words
+  ok   indirect mode
+  ok   buffer drained
+  ok   entry mismatches
+save iteration:
+  ok   bits to record
+  ok   words to record
+  ok   palette walk
+  ok   word walk stops at the end
+vortex palette tests: all passed
+
+==> tests/section.txt
+bundled 12 modules -> build\section.cpy
+\u25b6 Compiling build/section.cpy ...
+Wrote dist/section.exe
+built: dist/section.exe
+index layout:
+  ok   block origin
+  ok   block x
+  ok   block z
+  ok   block y
+  ok   block corner
+  ok   biome origin
+  ok   biome x
+  ok   biome z
+  ok   biome y
+  ok   biome corner
+access:
+  ok   empty section
+  ok   empty biome
+  ok   stored state
+  ok   stored at flat index
+  ok   neighbour untouched
+  ok   state survived rejected writes
+  ok   origin still empty
+  ok   out of range read
+  ok   biome out of range read
+  ok   biome origin still empty
+light nibbles:
+  ok   low nibble
+  ok   high nibble
+  ok   read back even
+  ok   read back odd
+  ok   pair neighbour kept
+  ok   pair rewritten
+  ok   last byte low nibble
+  ok   last byte high nibble
+  ok   beyond the array
+uniform section tag:
+  ok   root kind
+  ok   block states
+  ok   palette is a list
+  ok   one entry
+  ok   entry kind
+  ok   entry value
+  ok   no data array
+  ok   Y written
+  ok   section index
+  ok   light kind
+  ok   light words
+palette width in the tag:
+  ok   41 palette entries
+  ok   6 bits
+  ok   data words
+  ok   uniform biome has no data
+section nbt round trip:
+  ok   block bits
+  ok   biome global width
+  ok   biome direct mode
+  ok   block palette
+  ok   biome direct palette
+  ok   section serialised
+  ok   root read
+  ok   section rebuilt
+  ok   y kept
+  ok   blocks not uniform again
+  ok   block mismatches
+  ok   block light mismatches
+  ok   sky light mismatches
+  ok   biome mismatches
+  ok   corner state
+  ok   corner light
+vortex section tests: all passed
+
+==> tests/wire_chunk.txt
+bundled 12 modules -> build\wire_chunk.cpy
+\u25b6 Compiling build/wire_chunk.cpy ...
+Wrote dist/wire_chunk.exe
+built: dist/wire_chunk.exe
+wire local palettes:
+  ok   decoded local section
+  ok   section allocated
+  ok   section Y
+  ok   non-empty count
+  ok   local block id
+  ok   air palette id
+  ok   local biome id
+  ok   other biome id
+  ok   column stored
+  ok   negative world coordinate lookup
+  ok   world biome lookup
+  ok   column count
+  ok   column unload
+  ok   unloaded block reads as air
+wire global palettes:
+  ok   decoded global section
+  ok   section allocated
+  ok   global block id
+  ok   global block id at index 3
+  ok   global biome id
+  ok   second global biome id
+  ok   direct block mode
+  ok   direct biome mode
+wire truncation:
+  ok   truncated section rejected
+  ok   no partial section returned
+dynamic dimension registry:
+  ok   overworld registry entry
+  ok   custom dimension registry entry
+  ok   dimension registry complete
+  ok   biome count accepted
+  ok   dimension minimum section
+  ok   dimension section count
+  ok   custom biome width
+  ok   unaligned dimension rejected
+  ok   world dimension updated
+  ok   world section origin
+  ok   world section count
+wire chunk tests: all passed
+
+==> tests/heightmap.txt
+bundled 13 modules -> build\heightmap.cpy
+\u25b6 Compiling build/heightmap.cpy ...
+Wrote dist/heightmap.exe
+built: dist/heightmap.exe
+heightmap packing:
+  ok   longs per kind
+  ok   values per column
+  ok   packed
+  ok   unpacked
+  ok   round trip is exact
+  ok   field across the first word
+  ok   last field
+  ok   nine bit field truncates
+  ok   kind is not shared
+  ok   kind out of range
+  ok   coordinate out of range
+  ok   out of range read
+heightmap storage:
+  ok   height before load
+  ok   column inserted
+  ok   chunk count
+  ok   negative coordinate lookup
+  ok   second kind lookup
+  ok   unloaded chunk reads -1
+  ok   sections still absent
+  ok   heightmap replaced
+  ok   replacement wins
+  ok   unload
+  ok   gone after unload
+  ok   capacity reached
+  ok   no room for another
+chunk packet heightmaps:
+Decoded chunk (-1, 2) into 1 sections with lighting
+  ok   chunk decoded
+  ok   motion blocking corner
+  ok   field across words
+  ok   surface corner
+  ok   sections decoded too
+Decoded chunk (-1, 2) into 1 sections with lighting
+  ok   chunk with unknown kind decoded
+  ok   absent kind stays zero
+  ok   present kind kept
+Decoded chunk (-1, 2) into 1 sections with lighting
+  ok   chunk without surface decoded
+  ok   surface absent reads zero
+  ok   motion blocking still read
+Malformed chunk heightmaps
+  ok   wrong long count rejected
+  ok   nothing stored
+heightmap tests: all passed
+
+==> tests/registry.txt
+bundled 13 modules -> build\registry.cpy
+\u25b6 Compiling build/registry.cpy ...
+Wrote dist/registry.exe
+built: dist/registry.exe
+configuration dimension registry:
+  ok   dimension registry parsed
+  ok   dimension registry marked
+  ok   overworld entry valid
+  ok   overworld minimum section
+  ok   overworld section count
+  ok   nether minimum section
+  ok   nether section count
+  ok   biome registry parsed
+  ok   biome global width derived
+  ok   block global profile width
+  ok   join packet dimension type
+  ok   world adopts dimension
+  ok   world section origin updated
+  ok   world section count updated
+dimension registry tests: all passed
+
+==> tests/chunk_light.txt
+bundled 13 modules -> build\chunk_light.cpy
+\u25b6 Compiling build/chunk_light.cpy ...
+Wrote dist/chunk_light.exe
+built: dist/chunk_light.exe
+chunk packet light and block entities:
+Decoded chunk (0, 0) into 1 sections with lighting
+  ok   chunk with lighting decoded
+  ok   decoded chunk installed
+  ok   chunk section available
+  ok   sky light low nibble
+  ok   sky light high nibble
+  ok   unset block light remains zero
+Malformed chunk sky-light mask
+  ok   invalid chunk payload rejected
+  ok   invalid chunk not installed
+Malformed chunk block-light arrays or trailing data
+  ok   invalid chunk payload rejected
+  ok   invalid chunk not installed
+Decoded chunk (0, 0) into 1 sections with lighting
+  ok   chunk with lighting decoded
+  ok   decoded chunk installed
+  ok   chunk section available
+  ok   sky light low nibble
+  ok   sky light high nibble
+  ok   unset block light remains zero
+chunk light tests: all passed
+
+==> Building client backend (not launching renderer/client)
+bundled 12 modules -> build\backend.cpy
+\u25b6 Compiling build/backend.cpy ...
+Wrote dist/backend.exe
+built: dist/backend.exe
+
+Headless tests passed; backend build succeeded.

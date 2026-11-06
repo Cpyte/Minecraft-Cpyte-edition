@@ -1,9 +1,10 @@
 # Vortex engine - generated bundle. Do not edit: this file is assembled from
 # the modules listed below by tools/bundle.py.
 #
-#   native.cpy, core.cpy, strings.cpy, vbuf.cpy, nbt.cpy, palette.cpy, section.cpy, harness.cpy, test_section.cpy
+#   native.cpy, core.cpy, strings.cpy, vbuf.cpy, nbt.cpy, palette.cpy, section.cpy, heightmap.cpy, world.cpy, protocol_chunk.cpy, harness.cpy, test_section.cpy
 
 import stdlib
+
 
 
 # ===== native.cpy =====
@@ -1762,22 +1763,34 @@ def vcont_collect(c: VContainer*, values: int*) -> void:
         i += 1
 
 
-# How many distinct values `values` holds; counting each first appearance only
-# keeps the loop free of `break`, which the compiler does not accept here.
+# Counts distinct values in linear expected time; section compaction calls this
+# on all 4096 block entries, so a pairwise scan is prohibitively slow.
 def vcont_count_distinct(values: int*, count: int) -> int:
+    if count <= 0:
+        return 0
+    int capacity = 1
+    while capacity < count * 2:
+        capacity *= 2
+    int* slots = vt_calloc_int(capacity)
+    char* occupied = vt_calloc_char(capacity)
     int distinct = 0
     int probe = 0
     while probe < count:
         int candidate = vt_iget(values, probe)
-        int first = 1
-        int k = 0
-        while k < probe:
-            if vt_iget(values, k) == candidate:
-                first = 0
-            k += 1
-        if first == 1:
+        uint64 key = (uint64)candidate
+        key = key ^ (key >> (uint64)16)
+        key = key * (uint64)2654435761
+        key = key ^ (key >> (uint64)13)
+        int slot = (int)(key & (uint64)(capacity - 1))
+        while vt_at(occupied, slot) != 0 and vt_iget(slots, slot) != candidate:
+            slot = (slot + 1) & (capacity - 1)
+        if vt_at(occupied, slot) == 0:
+            vt_put(occupied, slot, 1)
+            vt_iset(slots, slot, candidate)
             distinct += 1
         probe += 1
+    vt_free((void*)slots)
+    vt_free((void*)occupied)
     return distinct
 
 
@@ -1987,6 +2000,11 @@ public def vcont_alloc(c: VContainer*, bits: int) -> void:
     c.mode = vcont_indirect_mode()
 
 
+public def vcont_alloc_direct(c: VContainer*, bits: int) -> void:
+    vcont_alloc_words(c, bits)
+    c.mode = vcont_direct_mode()
+
+
 public def vcont_set_word(c: VContainer*, index: int, value: uint64) -> void:
     if c.words == null or index < 0 or index >= c.words_len:
         return
@@ -2096,19 +2114,20 @@ def sec_blocks_direct_bits() -> int:
 
 
 def sec_biomes_min_bits() -> int:
-    return 3
+    return 1
 
 
 def sec_biomes_max_bits() -> int:
-    return 8
+    return 3
 
 
 def sec_biomes_direct_bits() -> int:
-    return 14
+    return 7
 
 
 struct VSection:
     int y                 # section index in the column, not a block coordinate
+    int non_empty         # non-air block count from a network section, if known
     VContainer* blocks
     VContainer* biomes
     char* block_light     # 2048 bytes, two 4 bit levels per byte
@@ -2239,26 +2258,41 @@ public def sec_palette_entry(c: VContainer*, index: int) -> int:
 # container writes the single palette entry and no data array, which is exactly
 # what the game does.
 def sec_container_to_nbt(c: VContainer*, name: str) -> VNbt*:
+    VContainer* encoded = c
+    VContainer* temporary = c
+    if vcont_mode(c) == vcont_direct_mode():
+        temporary = vcont_new(vcont_count(c), c.min_bits, 30, c.direct_bits)
+        int at = 0
+        while at < vcont_count(c):
+            vcont_set(temporary, at, vcont_at(c, at))
+            at += 1
+        vcont_compact(temporary)
+        encoded = temporary
+
     VNbt* root = nbt_compound_of(name)
     VNbt* palette = nbt_list_of("palette", nbt_int())
-    int slots = sec_palette_size(c)
+    int slots = sec_palette_size(encoded)
     int i = 0
     while i < slots:
-        nbt_append(palette, nbt_int_of("", sec_palette_entry(c, i)))
+        nbt_append(palette, nbt_int_of("", sec_palette_entry(encoded, i)))
         i += 1
     nbt_append(root, palette)
 
-    int bits = vcont_save_bits_for(c)
+    int bits = vcont_save_bits_for(encoded)
     if bits <= 0:
+        if temporary != c:
+            vcont_free(temporary)
         return root
     VNbt* data = nbt_new(nbt_long_array(), "data")
-    int words = vcont_save_words_for(c, bits)
+    int words = vcont_save_words_for(encoded, bits)
     nbt_set_longs(data, words)
     int w = 0
     while w < words:
-        nbt_set_long_at(data, w, (int64)vcont_save_word(c, w))
+        nbt_set_long_at(data, w, (int64)vcont_save_word(encoded, w))
         w += 1
     nbt_append(root, data)
+    if temporary != c:
+        vcont_free(temporary)
     return root
 
 
@@ -2274,11 +2308,12 @@ def sec_container_from_nbt(t: VNbt*, c: VContainer*, min_bits: int) -> int:
         return 0
     int bits = vcont_bits_for(slots, min_bits)
     vcont_reset(c, 0)
-    sec_load_palette(nbt_find(t, "palette"), c)
-    if vcont_palette_len(c) <= 0:
-        return 0
+    VNbt* palette = nbt_find(t, "palette")
     VNbt* data = nbt_find(t, "data")
     if data == null:
+        sec_load_palette(palette, c)
+        if vcont_palette_len(c) <= 0:
+            return 0
         # A single valued palette needs no data array: the whole section holds
         # the one entry.
         if vcont_palette_len(c) == 1:
@@ -2287,30 +2322,49 @@ def sec_container_from_nbt(t: VNbt*, c: VContainer*, min_bits: int) -> int:
         return 0
     if data.kind != nbt_long_array():
         return 0
-    vcont_alloc(c, bits)
+    VContainer* decoded = c
+    VContainer* temporary = c
+    if bits > c.max_bits:
+        temporary = vcont_new(vcont_count(c), min_bits, 30, c.direct_bits)
+        decoded = temporary
+    sec_load_palette(palette, decoded)
+
+    vcont_alloc(decoded, bits)
     int words = nbt_long_len(data)
-    int want = vcont_save_words_for(c, bits)
+    int want = vcont_save_words_for(decoded, bits)
     if words > want:
         words = want
     int w = 0
     while w < words:
-        vcont_set_word(c, w, (uint64)nbt_long_at(data, w))
+        vcont_set_word(decoded, w, (uint64)nbt_long_at(data, w))
         w += 1
+
+    if temporary != c:
+        int at = 0
+        while at < vcont_count(c):
+            vcont_set(c, at, vcont_at(decoded, at))
+            at += 1
+        vcont_free(temporary)
     return 1
 
 
 # ---- the section itself ------------------------------------------------------
 
-public def sec_new(y: int) -> VSection*:
+public def sec_new_for_wire(y: int, block_global_bits: int, biome_global_bits: int) -> VSection*:
     VSection* s = new VSection
     s.y = y
+    s.non_empty = 0
     s.blocks = vcont_new(sec_block_count(), sec_blocks_min_bits(),
-                         sec_blocks_max_bits(), sec_blocks_direct_bits())
+                         sec_blocks_max_bits(), block_global_bits)
     s.biomes = vcont_new(sec_biome_count(), sec_biomes_min_bits(),
-                         sec_biomes_max_bits(), sec_biomes_direct_bits())
+                         sec_biomes_max_bits(), biome_global_bits)
     s.block_light = vt_calloc_char(sec_light_bytes())
     s.sky_light = vt_calloc_char(sec_light_bytes())
     return s
+
+
+public def sec_new(y: int) -> VSection*:
+    return sec_new_for_wire(y, sec_blocks_direct_bits(), sec_biomes_direct_bits())
 
 
 public def sec_free(s: VSection*) -> void:
@@ -2423,6 +2477,592 @@ public def sec_from_nbt(t: VNbt*, y: int) -> VSection*:
     sec_light_from_tag(light, s.block_light)
     sec_light_from_tag(nbt_find(t, "SkyLight"), s.sky_light)
     return s
+
+
+# ===== heightmap.cpy =====
+# Vortex engine - chunk column heightmaps.
+#
+# A server sends one height value per block column, packed 9 bits at a time
+# least significant bit first across a big endian long array, so 256 values
+# occupy 36 longs. The values are absolute world Y, which is why a dimension
+# that starts below y = 0 still reports heights above its minimum: the packing
+# carries no offset. Cpyte shifts and masks `int64` correctly but compares an
+# unsigned value as signed, so the unpack loops stay in `int64` and only ever
+# test the low nine bits after the mask.
+
+
+public def hm_cells() -> int:
+    return 256
+
+
+public def hm_kind_count() -> int:
+    return 2
+
+
+# The kinds this engine stores. The wire names each one with its own id, so
+# these numbers only index the stored column.
+public def hm_motion_blocking() -> int:
+    return 0
+
+
+public def hm_world_surface() -> int:
+    return 1
+
+
+# `Heightmap.Type` ids as they appear in a chunk packet. The other types the
+# server may send - world surface and ocean floor before world generation -
+# are walked but not stored.
+public def hm_wire_world_surface() -> int64:
+    return (int64)1
+
+
+public def hm_wire_motion_blocking() -> int64:
+    return (int64)4
+
+
+public def hm_wire_kind_count() -> int64:
+    return (int64)6
+
+
+public def hm_bits() -> int:
+    return 9
+
+
+public def hm_value_mask() -> int64:
+    return (int64)511
+
+
+public def hm_long_count() -> int:
+    return (hm_cells() * hm_bits() + 63) / 64
+
+
+public def hm_values() -> int:
+    return hm_cells() * hm_kind_count()
+
+
+public def hm_kind_offset(kind: int) -> int:
+    if kind < 0 or kind >= hm_kind_count():
+        return -1
+    return kind * hm_cells()
+
+
+public def hm_new() -> int*:
+    return vt_calloc_int(hm_values())
+
+
+public def hm_free(values: int*) -> void:
+    if values != null:
+        vt_free((void*)values)
+
+
+public def hm_index(kind: int, x: int, z: int) -> int:
+    if x < 0 or x >= 16 or z < 0 or z >= 16:
+        return -1
+    int base = hm_kind_offset(kind)
+    if base < 0:
+        return -1
+    return base + z * 16 + x
+
+
+public def hm_set(values: int*, kind: int, x: int, z: int, height: int) -> int:
+    int slot = hm_index(kind, x, z)
+    if values == null or slot < 0:
+        return 0
+    vt_iset(values, slot, height)
+    return 1
+
+
+public def hm_get(values: int*, kind: int, x: int, z: int) -> int:
+    int slot = hm_index(kind, x, z)
+    if values == null or slot < 0:
+        return -1
+    return vt_iget(values, slot)
+
+
+# Unpacks one kind's 36 longs into `cells` heights at `kind * 256`.
+public def hm_unpack(longs: int64[], kind: int, values: int*) -> int:
+    int base = hm_kind_offset(kind)
+    if values == null or base < 0:
+        return 0
+    int i = 0
+    while i < hm_cells():
+        int bit = i * hm_bits()
+        int word = bit / 64
+        int shift = bit % 64
+        int64 raw = longs[word] >> shift
+        if shift > 64 - hm_bits():
+            # The field continues in the next long. `>>` sign extends, so the
+            # part held by this word has to be masked before the rest is
+            # OR-ed in, or the extension overwrites the high field bits.
+            int keep = 64 - shift
+            raw = (raw & (((int64)1 << keep) - (int64)1)) | (longs[word + 1] << keep)
+        vt_iset(values, base + i, (int)(raw & hm_value_mask()))
+        i += 1
+    return 1
+
+
+# Packs one kind's heights back into longs; the inverse, used by the tests and
+# by any future serverbound heightmap.
+public def hm_pack(values: int*, kind: int, longs: int64[]) -> int:
+    int base = hm_kind_offset(kind)
+    if values == null or base < 0:
+        return 0
+    int i = 0
+    while i < hm_long_count():
+        longs[i] = (int64)0
+        i += 1
+    i = 0
+    while i < hm_cells():
+        int bit = i * hm_bits()
+        int word = bit / 64
+        int shift = bit % 64
+        int64 value = (int64)vt_iget(values, base + i) & hm_value_mask()
+        longs[word] = longs[word] | (value << shift)
+        if shift > 64 - hm_bits():
+            longs[word + 1] = longs[word + 1] | (value >> (64 - shift))
+        i += 1
+    return 1
+
+
+# ===== world.cpy =====
+# Vortex engine - bounded loaded-chunk store.
+
+
+struct VWorld:
+    int capacity
+    int count
+    int min_section
+    int section_count
+    int block_global_bits
+    int biome_global_bits
+    int* chunk_x
+    int* chunk_z
+    char* columns
+    char* heightmaps
+
+
+struct VDimensionRegistry:
+    int capacity
+    int dimension_count
+    int dimension_registry_seen
+    int biome_registry_seen
+    int block_global_bits
+    int biome_global_bits
+    int* min_sections
+    int* section_counts
+
+
+public def vdimension_registry_new() -> VDimensionRegistry*:
+    VDimensionRegistry* registry = new VDimensionRegistry
+    registry.capacity = 256
+    registry.dimension_count = 0
+    registry.dimension_registry_seen = 0
+    registry.biome_registry_seen = 0
+    registry.block_global_bits = 15
+    registry.biome_global_bits = 6
+    registry.min_sections = vt_calloc_int(registry.capacity)
+    registry.section_counts = vt_calloc_int(registry.capacity)
+    return registry
+
+
+public def vdimension_registry_free(registry: VDimensionRegistry*) -> void:
+    if registry == null:
+        return
+    vt_free((void*)registry.min_sections)
+    vt_free((void*)registry.section_counts)
+    del registry
+
+
+public def vdimension_registry_add_dimension(registry: VDimensionRegistry*,
+                                             index: int, min_y: int,
+                                             height: int) -> int:
+    if registry == null or index < 0 or index >= registry.capacity:
+        return 0
+    if height < 16 or height > 4096 or height % 16 != 0 or min_y % 16 != 0:
+        return 0
+    vt_iset(registry.min_sections, index, min_y / 16)
+    vt_iset(registry.section_counts, index, height / 16)
+    if registry.dimension_count <= index:
+        registry.dimension_count = index + 1
+    return 1
+
+
+public def vdimension_registry_finish_dimensions(registry: VDimensionRegistry*,
+                                                  count: int) -> int:
+    if registry == null or count < 0 or count > registry.capacity:
+        return 0
+    registry.dimension_count = count
+    registry.dimension_registry_seen = 1
+    return 1
+
+
+public def vdimension_registry_dimension(registry: VDimensionRegistry*,
+                                         index: int) -> int64[]:
+    int64[] result = new int64[3]
+    if registry == null or index < 0 or index >= registry.dimension_count:
+        return result
+    result[0] = vt_iget(registry.section_counts, index) > 0
+    result[1] = vt_iget(registry.min_sections, index)
+    result[2] = vt_iget(registry.section_counts, index)
+    return result
+
+
+public def vdimension_registry_set_biome_count(registry: VDimensionRegistry*,
+                                                count: int) -> int:
+    if registry == null or count < 1 or count > 1048576:
+        return 0
+    int bits = 0
+    int capacity = 1
+    while capacity < count:
+        bits += 1
+        capacity *= 2
+    if bits < 1:
+        bits = 1
+    if bits > 32:
+        return 0
+    registry.biome_global_bits = bits
+    registry.biome_registry_seen = 1
+    return 1
+
+
+def vworld_find(world: VWorld*, x: int, z: int) -> int:
+    int i = 0
+    while i < world.count:
+        if vt_iget(world.chunk_x, i) == x and vt_iget(world.chunk_z, i) == z:
+            return i
+        i += 1
+    return -1
+
+
+def vworld_free_column(sections: char*, count: int) -> void:
+    if sections == null:
+        return
+    int i = 0
+    while i < count:
+        sec_free((VSection*)vt_ptr_get(sections, i))
+        i += 1
+    vt_free((void*)sections)
+
+
+public def vworld_new(capacity: int, min_section: int, section_count: int,
+                      block_global_bits: int, biome_global_bits: int) -> VWorld*:
+    if capacity < 1:
+        capacity = 1
+    if section_count < 1:
+        section_count = 1
+    VWorld* world = new VWorld
+    world.capacity = capacity
+    world.count = 0
+    world.min_section = min_section
+    world.section_count = section_count
+    world.block_global_bits = block_global_bits
+    world.biome_global_bits = biome_global_bits
+    world.chunk_x = vt_calloc_int(capacity)
+    world.chunk_z = vt_calloc_int(capacity)
+    world.columns = vt_calloc_ptrs(capacity)
+    world.heightmaps = vt_calloc_ptrs(capacity)
+    return world
+
+
+public def vworld_free(world: VWorld*) -> void:
+    if world == null:
+        return
+    int i = 0
+    while i < world.count:
+        vworld_free_column((char*)vt_ptr_get(world.columns, i), world.section_count)
+        hm_free((int*)vt_ptr_get(world.heightmaps, i))
+        i += 1
+    vt_free((void*)world.chunk_x)
+    vt_free((void*)world.chunk_z)
+    vt_free((void*)world.columns)
+    vt_free((void*)world.heightmaps)
+    del world
+
+
+public def vworld_chunk_count(world: VWorld*) -> int:
+    return world.count
+
+
+public def vworld_set_dimension(world: VWorld*, min_section: int,
+                                section_count: int,
+                                block_global_bits: int,
+                                biome_global_bits: int) -> int:
+    if world == null or world.count != 0 or section_count < 1 or section_count > 256:
+        return 0
+    if block_global_bits < 1 or block_global_bits > 32 or biome_global_bits < 1 or biome_global_bits > 32:
+        return 0
+    world.min_section = min_section
+    world.section_count = section_count
+    world.block_global_bits = block_global_bits
+    world.biome_global_bits = biome_global_bits
+    return 1
+
+
+# The column slot for (x, z), inserting an empty one when the chunk is new and
+# returning -1 once the store is full. A fresh slot has neither sections nor
+# heightmaps, so either half of the chunk packet may arrive first.
+def vworld_slot(world: VWorld*, x: int, z: int) -> int:
+    int index = vworld_find(world, x, z)
+    if index >= 0:
+        return index
+    if world.count >= world.capacity:
+        return -1
+    index = world.count
+    world.count += 1
+    vt_iset(world.chunk_x, index, x)
+    vt_iset(world.chunk_z, index, z)
+    return index
+
+
+public def vworld_replace_sections(world: VWorld*, x: int, z: int,
+                                   sections: char*) -> int:
+    if world == null or sections == null:
+        return 0
+    int index = vworld_slot(world, x, z)
+    if index < 0:
+        return 0
+    vworld_free_column((char*)vt_ptr_get(world.columns, index), world.section_count)
+    vt_ptr_set(world.columns, index, (void*)sections)
+    return 1
+
+
+# Takes ownership of `values`, one packed heightmap column of `hm_values()`
+# entries, and frees whatever the chunk held before.
+public def vworld_set_heightmaps(world: VWorld*, x: int, z: int,
+                                 values: int*) -> int:
+    if world == null or values == null:
+        return 0
+    int index = vworld_slot(world, x, z)
+    if index < 0:
+        return 0
+    hm_free((int*)vt_ptr_get(world.heightmaps, index))
+    vt_ptr_set(world.heightmaps, index, (void*)values)
+    return 1
+
+
+public def vworld_unload_chunk(world: VWorld*, x: int, z: int) -> int:
+    if world == null:
+        return 0
+    int index = vworld_find(world, x, z)
+    if index < 0:
+        return 0
+    vworld_free_column((char*)vt_ptr_get(world.columns, index), world.section_count)
+    hm_free((int*)vt_ptr_get(world.heightmaps, index))
+    int i = index + 1
+    while i < world.count:
+        vt_iset(world.chunk_x, i - 1, vt_iget(world.chunk_x, i))
+        vt_iset(world.chunk_z, i - 1, vt_iget(world.chunk_z, i))
+        vt_ptr_set(world.columns, i - 1, vt_ptr_get(world.columns, i))
+        vt_ptr_set(world.heightmaps, i - 1, vt_ptr_get(world.heightmaps, i))
+        i += 1
+    world.count -= 1
+    vt_ptr_set(world.columns, world.count, null)
+    vt_ptr_set(world.heightmaps, world.count, null)
+    return 1
+
+
+public def vworld_section(world: VWorld*, chunk_x: int, chunk_z: int,
+                          section_y: int) -> VSection*:
+    if world == null:
+        return null
+    int column_index = vworld_find(world, chunk_x, chunk_z)
+    int section_index = section_y - world.min_section
+    if column_index < 0 or section_index < 0 or section_index >= world.section_count:
+        return null
+    char* sections = (char*)vt_ptr_get(world.columns, column_index)
+    if sections == null:
+        return null
+    return (VSection*)vt_ptr_get(sections, section_index)
+
+
+public def vworld_block_at(world: VWorld*, x: int, y: int, z: int) -> int:
+    int chunk_x = x / 16
+    int local_x = x % 16
+    if local_x < 0:
+        chunk_x -= 1
+        local_x += 16
+    int chunk_z = z / 16
+    int local_z = z % 16
+    if local_z < 0:
+        chunk_z -= 1
+        local_z += 16
+    int section_y = y / 16
+    int local_y = y % 16
+    if local_y < 0:
+        section_y -= 1
+        local_y += 16
+    VSection* section = vworld_section(world, chunk_x, chunk_z, section_y)
+    if section == null:
+        return 0
+    return sec_block_at(section, local_x, local_y, local_z)
+
+
+public def vworld_biome_at(world: VWorld*, x: int, y: int, z: int) -> int:
+    int chunk_x = x / 16
+    int local_x = x % 16
+    if local_x < 0:
+        chunk_x -= 1
+        local_x += 16
+    int chunk_z = z / 16
+    int local_z = z % 16
+    if local_z < 0:
+        chunk_z -= 1
+        local_z += 16
+    int section_y = y / 16
+    int local_y = y % 16
+    if local_y < 0:
+        section_y -= 1
+        local_y += 16
+    VSection* section = vworld_section(world, chunk_x, chunk_z, section_y)
+    if section == null:
+        return 0
+    return sec_biome_at(section, local_x / 4, local_y / 4, local_z / 4)
+
+
+# The stored height for one world block column, or -1 while the chunk is not
+# loaded or the server sent no heightmap of that kind. Heights are absolute
+# world Y as packed on the wire, so a negative minimum build height does not
+# shift them.
+public def vworld_height_at(world: VWorld*, kind: int, x: int, z: int) -> int:
+    if world == null:
+        return -1
+    int local_x = x % 16
+    int chunk_x = x / 16
+    if local_x < 0:
+        chunk_x -= 1
+        local_x += 16
+    int local_z = z % 16
+    int chunk_z = z / 16
+    if local_z < 0:
+        chunk_z -= 1
+        local_z += 16
+    int column_index = vworld_find(world, chunk_x, chunk_z)
+    if column_index < 0:
+        return -1
+    int* values = (int*)vt_ptr_get(world.heightmaps, column_index)
+    if values == null:
+        return -1
+    return hm_get(values, kind, local_x, local_z)
+
+
+# ===== protocol_chunk.cpy =====
+# Vortex engine - protocol PalettedContainer decoder.
+
+
+def sec_wire_read_varint(b: VBuf*, ok: int*) -> int:
+    *ok = 0
+    int value = vbuf_take_varint(b, ok)
+    if *ok == 0 or value < 0:
+        *ok = 0
+        return 0
+    return value
+
+
+def sec_wire_read_container(b: VBuf*, c: VContainer*, entries: int,
+                            blocks: bool, global_bits: int) -> int:
+    if vbuf_avail(b) < 1:
+        return 0
+    int wire_bits = (int)vbuf_take_u8(b)
+    int bits = 0
+    bool has_palette = false
+    if wire_bits == 0:
+        int ok = 0
+        int value = sec_wire_read_varint(b, &ok)
+        if ok == 0:
+            return 0
+        vcont_reset(c, value)
+        return 1
+    if blocks:
+        if wire_bits <= 4:
+            bits = 4
+            has_palette = true
+        elif wire_bits <= 8:
+            bits = wire_bits
+            has_palette = true
+        else:
+            bits = global_bits
+            if bits < wire_bits:
+                bits = wire_bits
+    else:
+        if wire_bits <= 3:
+            bits = wire_bits
+            has_palette = true
+        else:
+            bits = global_bits
+            if bits < wire_bits:
+                bits = wire_bits
+    if bits < 1 or bits > 32:
+        return 0
+    if has_palette:
+        int ok = 0
+        int palette_count = sec_wire_read_varint(b, &ok)
+        if ok == 0 or palette_count < 1 or palette_count > (1 << bits):
+            return 0
+        vcont_reset(c, 0)
+        int i = 0
+        while i < palette_count:
+            int value = sec_wire_read_varint(b, &ok)
+            if ok == 0:
+                return 0
+            vcont_palette_add(c, value)
+            i += 1
+        if vcont_palette_len(c) != palette_count:
+            return 0
+    else:
+        c.direct_bits = bits
+    int per_word = 64 / bits
+    int word_count = (entries + per_word - 1) / per_word
+    if vbuf_avail(b) < word_count * 8:
+        return 0
+    if has_palette:
+        vcont_alloc(c, bits)
+    else:
+        vcont_alloc_direct(c, bits)
+    int word = 0
+    while word < word_count:
+        vcont_set_word(c, word, (uint64)vbuf_take_i64_be(b))
+        word += 1
+    return 1
+
+
+public def sec_read_wire_sections(b: VBuf*, count: int, min_section: int,
+                                 block_global_bits: int,
+                                 biome_global_bits: int,
+                                 ok: int*) -> char*:
+    *ok = 0
+    if b == null or count < 1 or block_global_bits < 1 or biome_global_bits < 1:
+        return null
+    char* sections = vt_calloc_ptrs(count)
+    int i = 0
+    while i < count:
+        if vbuf_avail(b) < 2:
+            vworld_free_column(sections, count)
+            return null
+        int non_empty = vbuf_take_i16_be(b)
+        if non_empty < 0 or non_empty > 4096:
+            vworld_free_column(sections, count)
+            return null
+        VSection* section = sec_new_for_wire(min_section + i,
+                                             block_global_bits,
+                                             biome_global_bits)
+        section.non_empty = non_empty
+        int blocks_ok = sec_wire_read_container(b, section.blocks,
+                                                sec_block_count(), true,
+                                                block_global_bits)
+        int biomes_ok = sec_wire_read_container(b, section.biomes,
+                                                sec_biome_count(), false,
+                                                biome_global_bits)
+        if blocks_ok == 0 or biomes_ok == 0:
+            sec_free(section)
+            vworld_free_column(sections, count)
+            return null
+        vt_ptr_set(sections, i, (void*)section)
+        i += 1
+    if vbuf_avail(b) != 0:
+        vworld_free_column(sections, count)
+        return null
+    *ok = 1
+    return sections
 
 
 # ===== harness.cpy =====
@@ -2627,9 +3267,10 @@ def test_nbt_round_trip(fails: int*) -> void:
     sec_compact(s)
 
     check_int("block bits", vcont_bits(s.blocks), 5, fails)
-    check_int("biome bits", vcont_bits(s.biomes), 4, fails)
+    check_int("biome global width", vcont_bits(s.biomes), 7, fails)
+    check_int("biome direct mode", vcont_mode(s.biomes), vcont_direct_mode(), fails)
     check_int("block palette", vcont_palette_len(s.blocks), 22, fails)
-    check_int("biome palette", vcont_palette_len(s.biomes), 9, fails)
+    check_int("biome direct palette", vcont_palette_len(s.biomes), 0, fails)
 
     VNbt* root = sec_to_nbt(s, "")
     VBuf* b = vbuf_new(4096)
