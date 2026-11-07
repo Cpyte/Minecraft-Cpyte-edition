@@ -1,6 +1,21 @@
 import stdlib
 
 
+# First launch: discover a local Minecraft installation and build the block
+# database from its data generator. Normal launches only verify the existing
+# file, so this costs nothing once generated/blockdb.bin exists.
+def ensure_block_database() -> void:
+    if blockdb_load_default() == 1:
+        print(f"Block database: {blockdb_block_count()} blocks, {blockdb_state_count()} states")
+        return
+    print("Block database not found; scanning local Minecraft installations (first launch only) ...")
+    if vt_run_blockdb_setup() == 0 and blockdb_load_default() == 1:
+        print(f"Block database: {blockdb_block_count()} blocks, {blockdb_state_count()} states")
+        return
+    print("Block database unavailable; the mesher will treat every non-air block as an opaque cube.")
+    print("Set VORTEX_BLOCK_DB to a generated database, or run tools/setup_blockdb.py --force.")
+
+
 def main() -> int:
     if mc_prepare_stdin() != 0:
         print("Could not configure terminal input for Play polling")
@@ -12,6 +27,8 @@ def main() -> int:
         return 1
     str mode = mc_stdin_line_copy(0)
     mc_stdin_line_done()
+    if mode == "2":
+        ensure_block_database()
     print("Server host:")
     if mc_stdin_read_line() < 0:
         print("Could not read server host")

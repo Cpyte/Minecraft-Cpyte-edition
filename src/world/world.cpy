@@ -318,3 +318,53 @@ public def vworld_height_at(world: VWorld*, kind: int, x: int, z: int) -> int:
     if values == null:
         return -1
     return hm_get(values, kind, local_x, local_z)
+
+
+# Packed sky/block light: sky * 16 + block. An unloaded section reads as full
+# sky, which keeps the mesh of a partially loaded world visible.
+public def vworld_light_at(world: VWorld*, x: int, y: int, z: int) -> int:
+    int chunk_x = x / 16
+    int local_x = x % 16
+    if local_x < 0:
+        chunk_x -= 1
+        local_x += 16
+    int chunk_z = z / 16
+    int local_z = z % 16
+    if local_z < 0:
+        chunk_z -= 1
+        local_z += 16
+    int section_y = y / 16
+    int local_y = y % 16
+    if local_y < 0:
+        section_y -= 1
+        local_y += 16
+    VSection* section = vworld_section(world, chunk_x, chunk_z, section_y)
+    if section == null:
+        return 15 * 16
+    return sec_sky_light_at(section, local_x, local_y, local_z) * 16 + sec_block_light_at(section, local_x, local_y, local_z)
+
+
+# Writes one block. Returns 0 when the chunk or section is not loaded, so a
+# block update for an unloaded chunk is a no-op rather than an error.
+public def vworld_set_block_at(world: VWorld*, x: int, y: int, z: int,
+                               state: int) -> int:
+    int chunk_x = x / 16
+    int local_x = x % 16
+    if local_x < 0:
+        chunk_x -= 1
+        local_x += 16
+    int chunk_z = z / 16
+    int local_z = z % 16
+    if local_z < 0:
+        chunk_z -= 1
+        local_z += 16
+    int section_y = y / 16
+    int local_y = y % 16
+    if local_y < 0:
+        section_y -= 1
+        local_y += 16
+    VSection* section = vworld_section(world, chunk_x, chunk_z, section_y)
+    if section == null:
+        return 0
+    sec_block_set(section, local_x, local_y, local_z, state)
+    return 1

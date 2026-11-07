@@ -221,6 +221,18 @@ ccode:
     int vt_sign_extend_32(unsigned long long raw) {
         return (int)(unsigned int)(raw & 0xFFFFFFFFULL);
     }
+    /* Block position: x 26 bits, z 26 bits, y 12 bits, each signed. */
+    void vt_unpack_block_pos(long long packed, int* out) {
+        out[0] = (int)(packed >> 38);
+        out[1] = (int)((packed << 26) >> 52);
+        out[2] = (int)((packed << 38) >> 38);
+    }
+    /* Section position: x 22 bits, z 22 bits, y 20 bits, each signed. */
+    void vt_unpack_section_pos(long long packed, int* out) {
+        out[0] = (int)(packed >> 42);
+        out[1] = (int)((packed << 44) >> 44);
+        out[2] = (int)((packed << 22) >> 42);
+    }
 
     /* --- packed long arrays --------------------------------------------- */
     /* Section palettes use the community "padded" packing: a 64 bit word holds
@@ -321,4 +333,24 @@ ccode:
         unsigned long long bits = (unsigned long long)0;
         memcpy(&bits, &d, sizeof(bits));
         return bits;
+    }
+
+    /* --- first-launch block database setup ------------------------------ */
+    /* tools/setup_blockdb.py discovers a local installation, runs the vanilla
+     * data generator and writes generated/blockdb.bin. The client calls this
+     * only when the database is missing, so normal launches do no work. The
+     * command is fixed (no user input), and the tool falls back gracefully. */
+    int vt_run_blockdb_setup(void) {
+        int rc = 0;
+#ifdef _WIN32
+        rc = system("py -3 tools/setup_blockdb.py --auto");
+        if (rc == 0) return 0;
+        rc = system("python tools/setup_blockdb.py --auto");
+        return rc == 0 ? 0 : 1;
+#else
+        rc = system("python3 tools/setup_blockdb.py --auto");
+        if (rc == 0) return 0;
+        rc = system("python tools/setup_blockdb.py --auto");
+        return rc == 0 ? 0 : 1;
+#endif
     }

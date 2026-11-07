@@ -137,7 +137,7 @@ public def decode_frame(data: int64[]) -> int64[]:
     return decoded
 
 public def encode_handshake(protocol_version: int64, host: int64[], host_length: int64, port: int64, intent: int64) -> int64[]:
-    int64[] body = encode_varint(0)
+    int64[] body = encode_varint(pid_hs_s_intention())
     body = append_varint(body, protocol_version)
     body = append_varint(body, host_length)
     int64 index = 0
@@ -156,7 +156,7 @@ public def encode_handshake(protocol_version: int64, host: int64[], host_length:
 
 public def encode_status_request() -> int64[]:
     int64[] empty = new int64[0]
-    return encode_packet_frame(0, empty)
+    return encode_packet_frame(pid_st_s_status_request(), empty)
 
 public def encode_ping_request(time: int64) -> int64[]:
     int64[] ping = new int64[8]
@@ -164,7 +164,7 @@ public def encode_ping_request(time: int64) -> int64[]:
     while index < 8:
         ping[index] = time >> (7 - index) * 8 & 0xFF
         index = index + 1
-    return encode_packet_frame(1, ping)
+    return encode_packet_frame(pid_st_s_ping_request(), ping)
 
 public def send_bytes(socket_handle: int64, data: int64[]) -> int64:
     if len(data) == 0:
@@ -300,7 +300,7 @@ public def read_login_response_body(socket_handle: int64, frame: int64[]) -> int
     if packet_id[0] != 1:
         print("Malformed login response packet id")
         return new int64[0]
-    if packet_id[1] != 3:
+    if packet_id[1] != pid_lg_c_login_compression():
         return body
     int64[] threshold = decode_varint(body, packet_id[2])
     if threshold[0] != 1 or (threshold[1] < 0 or (threshold[1] > 2097151 or threshold[2] != len(body))):
@@ -333,7 +333,7 @@ public def encode_config_client_information() -> int64[]:
     payload[11] = 0
     payload[12] = 1
     payload[13] = 0
-    return encode_packet_frame(0, payload)
+    return encode_packet_frame(pid_cfg_s_client_information(), payload)
 
 public def decode_be_int32(data: int64[], offset: int64) -> int64:
     int64 value = data[offset] << 24 | (data[offset + 1] << 16 | (data[offset + 2] << 8 | data[offset + 3]))
@@ -1172,7 +1172,7 @@ public def encode_chat_message(message: int64[], message_length: int64, timestam
     payload[position + 3] = 0
     payload[position + 4] = 0
     payload[position + 5] = 0
-    return encode_packet_frame(9, payload)
+    return encode_packet_frame(pid_pl_s_chat(), payload)
 
 public def encode_chat_command(command: int64[], command_length: int64) -> int64[]:
     int64[] encoded_length = encode_varint(command_length)
@@ -1185,7 +1185,7 @@ public def encode_chat_command(command: int64[], command_length: int64) -> int64
     while index < command_length:
         payload[len(encoded_length) + index] = command[index + 1]
         index = index + 1
-    return encode_packet_frame(7, payload)
+    return encode_packet_frame(pid_pl_s_chat_command(), payload)
 
 public def print_system_chat(body: int64[], offset: int64) -> int:
     if offset >= len(body):
@@ -1535,6 +1535,147 @@ public def read_play_login_dimension(body: int64[],
     return dimension_type
 
 
+public def decode_be_i64(data: int64[], offset: int64) -> int64:
+    if offset < 0 or offset + 8 > len(data):
+        return (int64)0
+    int64 value = (int64)0
+    int64 index = 0
+    while index < 8:
+        value = (value << 8) | data[offset + index]
+        index = index + 1
+    return value
+
+
+# Block Update (0x08): packed block position, then the new state id.
+public def handle_block_update(world: VWorld*, body: int64[],
+                               offset: int64) -> int:
+    if offset < 0 or offset + 9 > len(body):
+        return 1
+    int64 packed = decode_be_i64(body, offset)
+    int64[] state = decode_varint(body, offset + 8)
+    if state[0] != 1 or state[1] < 0 or state[1] > 2147483647 or state[2] != len(body):
+        return 1
+    int* position = vt_calloc_int(3)
+    vt_unpack_block_pos(packed, position)
+    int result = vworld_set_block_at(world, vt_iget(position, 0),
+                                     vt_iget(position, 1), vt_iget(position, 2),
+                                     (int)state[1])
+    vt_free((void*)position)
+    if result == 0:
+        return 0
+    return 0
+
+
+# Section Blocks Update (0x56): section position, non-air count, then
+# (index delta, state id) pairs for the blocks that changed.
+public def handle_section_blocks_update(world: VWorld*, body: int64[],
+                                        offset: int64) -> int:
+    if offset < 0 or offset + 8 > len(body):
+        return 1
+    int64 packed = decode_be_i64(body, offset)
+    int* position = vt_calloc_int(3)
+    vt_unpack_section_pos(packed, position)
+    int section_x = vt_iget(position, 0)
+    int section_y = vt_iget(position, 1)
+    int section_z = vt_iget(position, 2)
+    vt_free((void*)position)
+    int64[] count = decode_varint(body, offset + 8)
+    if count[0] != 1 or count[1] < 0 or count[1] > 4096:
+        return 1
+    VSection* section = vworld_section(world, section_x, section_z, section_y)
+    int64 cursor = count[2]
+    int64 index = 0
+    int64 slot = 0
+    while index < count[1]:
+        int64[] delta = decode_varint(body, cursor)
+        if delta[0] != 1 or delta[1] < 0:
+            return 1
+        int64[] state = decode_varint(body, delta[2])
+        if state[0] != 1 or state[1] < 0 or state[1] > 2147483647:
+            return 1
+        slot += delta[1]
+        if slot >= 4096:
+            return 1
+        if section != null:
+            sec_block_set(section, (int)(slot % 16), (int)(slot / 256),
+                          (int)((slot / 16) % 16), (int)state[1])
+        cursor = state[2]
+        index += 1
+    if cursor != len(body):
+        return 1
+    return 0
+
+
+# Light Update (0x31): chunk coordinates, the four masks, then the non-empty
+# sky and block light arrays for the sections the masks select.
+public def handle_light_update(world: VWorld*, body: int64[],
+                               offset: int64) -> int:
+    int64[] chunk_x = decode_varint(body, offset)
+    if chunk_x[0] != 1:
+        return 1
+    int64[] chunk_z = decode_varint(body, chunk_x[2])
+    if chunk_z[0] != 1:
+        return 1
+    int64 column = 0
+    char* sections = null
+    while column < world.count:
+        if vt_iget(world.chunk_x, (int)column) == chunk_x[1] and vt_iget(world.chunk_z, (int)column) == chunk_z[1]:
+            sections = (char*)vt_ptr_get(world.columns, (int)column)
+            break
+        column += 1
+    int64 position = chunk_z[2]
+    int64 bit_limit = world.section_count + 2
+    int64[] sky_mask = chunk_read_light_mask(body, position, bit_limit)
+    if sky_mask[0] != 1:
+        return 1
+    position = sky_mask[3]
+    int64[] block_mask = chunk_read_light_mask(body, position, bit_limit)
+    if block_mask[0] != 1:
+        return 1
+    position = block_mask[3]
+    int64[] empty_sky = chunk_read_light_mask(body, position, bit_limit)
+    if empty_sky[0] != 1:
+        return 1
+    position = empty_sky[3]
+    int64[] empty_block = chunk_read_light_mask(body, position, bit_limit)
+    if empty_block[0] != 1:
+        return 1
+    position = empty_block[3]
+    if chunk_masks_overlap(body, sky_mask[1], sky_mask[2],
+                           empty_sky[1], empty_sky[2], bit_limit):
+        return 1
+    if chunk_masks_overlap(body, block_mask[1], block_mask[2],
+                           empty_block[1], empty_block[2], bit_limit):
+        return 1
+    if sections != null:
+        int64[] sky_arrays = chunk_read_light_arrays(
+            body, position, sky_mask[1], sky_mask[2], bit_limit, sections, true)
+        if sky_arrays[0] != 1:
+            return 1
+        int64[] block_arrays = chunk_read_light_arrays(
+            body, sky_arrays[2], block_mask[1], block_mask[2], bit_limit,
+            sections, false)
+        if block_arrays[0] != 1 or block_arrays[2] != len(body):
+            return 1
+    return 0
+
+
+# Meshes one freshly loaded chunk and reports the greedy result; this is the
+# backend's proof that decode -> palette -> mesh is wired end to end.
+def mesh_loaded_chunk(world: VWorld*, chunk_x: int, chunk_z: int) -> void:
+    int64 opaque_quads = 0
+    int64 translucent_quads = 0
+    int index = 0
+    while index < world.section_count:
+        VMeshResult* result = vmesh_section(world, chunk_x, chunk_z,
+                                            world.min_section + index)
+        opaque_quads += vmesh_quad_count(vmesh_result_opaque(result))
+        translucent_quads += vmesh_quad_count(vmesh_result_translucent(result))
+        vmesh_result_free(result)
+        index += 1
+    print(f"Meshed chunk ({chunk_x}, {chunk_z}): {opaque_quads} opaque quads, {translucent_quads} translucent quads")
+
+
 public def play_session_loop(socket_handle: int64, world: VWorld*,
                              registry: VDimensionRegistry*) -> int:
     int64[] tracked_chunks_x = new int64[8192]
@@ -1604,7 +1745,7 @@ public def play_session_loop(socket_handle: int64, world: VWorld*,
         if packet_id[0] != 1:
             print("Malformed Play packet id")
             return 1
-        if packet_id[1] == 50:
+        if packet_id[1] == pid_pl_c_login():
             int64[] dimension_type = read_play_login_dimension(body, packet_id[2])
             if dimension_type[0] != 1:
                 print("Malformed Play login dimension metadata")
@@ -1621,20 +1762,20 @@ public def play_session_loop(socket_handle: int64, world: VWorld*,
             print(f"Configured dimension sections: min={world.min_section}, count={world.section_count}, block bits={world.block_global_bits}, biome bits={world.biome_global_bits}")
             received_play_login = true
             int64[] player_loaded = new int64[0]
-            int64[] response = encode_packet_frame(44, player_loaded)
+            int64[] response = encode_packet_frame(pid_pl_s_player_loaded(), player_loaded)
             if send_bytes(socket_handle, response) != 0:
                 print("Failed to acknowledge Play login")
                 return 1
             print("Play login accepted; type chat, /command, or /quit")
-        elif packet_id[1] == 45:
+        elif packet_id[1] == pid_pl_c_keep_alive():
             if len(body) != packet_id[2] + 8:
                 print("Malformed Play keep-alive")
                 return 1
-            int64[] response = encode_keepalive_response(28, body, packet_id[2])
+            int64[] response = encode_keepalive_response(pid_pl_s_keep_alive(), body, packet_id[2])
             if send_bytes(socket_handle, response) != 0:
                 print("Failed to respond to Play keep-alive")
                 return 1
-        elif packet_id[1] == 62:
+        elif packet_id[1] == pid_pl_c_ping():
             if len(body) != packet_id[2] + 4:
                 print("Malformed Play ping")
                 return 1
@@ -1643,11 +1784,11 @@ public def play_session_loop(socket_handle: int64, world: VWorld*,
             while index < 4:
                 pong[index] = body[packet_id[2] + index]
                 index = index + 1
-            int64[] response = encode_packet_frame(45, pong)
+            int64[] response = encode_packet_frame(pid_pl_s_pong(), pong)
             if send_bytes(socket_handle, response) != 0:
                 print("Failed to answer Play ping")
                 return 1
-        elif packet_id[1] == 73:
+        elif packet_id[1] == pid_pl_c_player_position():
             int64[] teleport_id = decode_varint(body, packet_id[2])
             int64 position_start = teleport_id[2]
             if teleport_id[0] != 1 or position_start + 60 != len(body):
@@ -1679,11 +1820,11 @@ public def play_session_loop(socket_handle: int64, world: VWorld*,
             while index < 4:
                 payload[output_index + (28 + index)] = mc_float_be_byte(pitch, index)
                 index = index + 1
-            int64[] response = encode_packet_frame(0, payload)
+            int64[] response = encode_packet_frame(pid_pl_s_accept_teleportation(), payload)
             if send_bytes(socket_handle, response) != 0:
                 print("Failed to acknowledge player teleport")
                 return 1
-        elif packet_id[1] == 46:
+        elif packet_id[1] == pid_pl_c_level_chunk_with_light():
             if packet_id[2] + 8 > len(body):
                 print("Truncated chunk-with-light packet")
                 return 1
@@ -1705,7 +1846,7 @@ public def play_session_loop(socket_handle: int64, world: VWorld*,
                 tracked_chunk_count = tracked_chunk_count + 1
             if not found_chunk:
                 print(f"Stored chunk ({chunk_x}, {chunk_z}); loaded chunk count: {tracked_chunk_count}")
-        elif packet_id[1] == 38:
+        elif packet_id[1] == pid_pl_c_forget_level_chunk():
             if packet_id[2] + 8 > len(body):
                 print("Truncated chunk-unload packet")
                 return 1
@@ -1724,7 +1865,7 @@ public def play_session_loop(socket_handle: int64, world: VWorld*,
                 index = index + 1
             vworld_unload_chunk(world, (int)chunk_x, (int)chunk_z)
             print(f"Forgot chunk ({chunk_x}, {chunk_z})")
-        elif packet_id[1] == 1:
+        elif packet_id[1] == pid_pl_c_add_entity():
             int64[] entity_id = decode_varint(body, packet_id[2])
             if entity_id[0] != 1:
                 print("Malformed entity spawn packet")
@@ -1740,7 +1881,7 @@ public def play_session_loop(socket_handle: int64, world: VWorld*,
                 tracked_entity_ids[tracked_entity_count] = entity_id[1]
                 tracked_entity_count = tracked_entity_count + 1
                 print(f"Tracked entity {entity_id[1]}; entity count: {tracked_entity_count}")
-        elif packet_id[1] == 78:
+        elif packet_id[1] == pid_pl_c_remove_entities():
             int64[] count = decode_varint(body, packet_id[2])
             if count[0] != 1 or (count[1] < 0 or count[1] > 8192):
                 print("Malformed entity-removal packet")
@@ -1768,7 +1909,7 @@ public def play_session_loop(socket_handle: int64, world: VWorld*,
                 print("Unexpected data in entity-removal packet")
                 return 1
             print(f"Entity removals processed; entity count: {tracked_entity_count}")
-        elif packet_id[1] == 11:
+        elif packet_id[1] == pid_pl_c_chunk_batch_finished():
             int64[] batch_size = decode_varint(body, packet_id[2])
             if batch_size[0] != 1 or batch_size[2] != len(body):
                 print("Malformed chunk-batch-finished packet")
@@ -1778,32 +1919,41 @@ public def play_session_loop(socket_handle: int64, world: VWorld*,
             response_payload[1] = 128
             response_payload[2] = 0
             response_payload[3] = 0
-            int64[] response = encode_packet_frame(11, response_payload)
+            int64[] response = encode_packet_frame(pid_pl_s_chunk_batch_received(), response_payload)
             if send_bytes(socket_handle, response) != 0:
                 print("Failed to acknowledge chunk batch")
                 return 1
             print(f"Chunk batch {batch_size[1]} processed; tracked chunks: {tracked_chunk_count}")
-        elif packet_id[1] == 124:
+        elif packet_id[1] == pid_pl_c_system_chat():
             if print_system_chat(body, packet_id[2]) != 0:
                 return 1
-        elif packet_id[1] == 66:
+        elif packet_id[1] == pid_pl_c_player_chat():
             print("Received player chat; signed-chat decoding and secure-session acknowledgements are not implemented")
-        elif packet_id[1] == 33:
+        elif packet_id[1] == pid_pl_c_disguised_chat():
             print("Received disguised chat; this chat component format is not yet rendered")
-        elif packet_id[1] == 16:
+        elif packet_id[1] == pid_pl_c_commands():
             print("Received the server command tree")
-        elif packet_id[1] == 143:
+        elif packet_id[1] == pid_pl_c_show_dialog():
             if handle_configuration_dialog(socket_handle, body, packet_id[2], true) != 0:
                 print("Could not process the Play dialog")
                 return 1
-        elif packet_id[1] == 142:
+        elif packet_id[1] == pid_pl_c_clear_dialog():
             print("Server cleared the active Play dialog")
-        elif packet_id[1] == 32:
+        elif packet_id[1] == pid_pl_c_disconnect():
             print("Server disconnected during Play")
             return 0
-        elif packet_id[1] == 120:
-            print("Server requested a return to Configuration; that transition is not implemented")
-            return 1
+        elif packet_id[1] == pid_pl_c_start_configuration():
+            print("Server requested a return to Configuration")
+            int64[] empty_payload = new int64[0]
+            int64[] acknowledgement = encode_packet_frame(pid_pl_s_configuration_acknowledged(), empty_payload)
+            if send_bytes(socket_handle, acknowledgement) != 0:
+                print("Failed to acknowledge the configuration transition")
+                return 1
+            received_play_login = false
+            if handle_configuration(socket_handle, registry) != 0:
+                print("Configuration after Play failed")
+                return 1
+            print("Re-entered Play after configuration")
         packet_count = packet_count + 1
     if not received_play_login:
         print("Play packet limit reached before Play login")
@@ -1842,29 +1992,29 @@ public def handle_configuration(socket_handle: int64,
         if packet_id[0] != 1:
             print("Malformed configuration packet id")
             return 1
-        if packet_id[1] == 3:
+        if packet_id[1] == pid_cfg_c_finish_configuration():
             if packet_id[2] != len(body):
                 print("Malformed finish-configuration packet")
                 return 1
             int64[] empty = new int64[0]
-            int64[] acknowledgement = encode_packet_frame(3, empty)
+            int64[] acknowledgement = encode_packet_frame(pid_cfg_s_finish_configuration(), empty)
             if send_bytes(socket_handle, acknowledgement) != 0:
                 print("Failed to acknowledge configuration")
                 return 1
             print("Configuration complete; entered the Play protocol state")
             return 0
-        if packet_id[1] == 2:
+        if packet_id[1] == pid_cfg_c_disconnect():
             print("Server disconnected during configuration")
             return 1
-        if packet_id[1] == 4:
+        if packet_id[1] == pid_cfg_c_keep_alive():
             if len(body) != packet_id[2] + 8:
                 print("Malformed configuration keep-alive")
                 return 1
-            int64[] response = encode_keepalive_response(4, body, packet_id[2])
+            int64[] response = encode_keepalive_response(pid_cfg_s_keep_alive(), body, packet_id[2])
             if send_bytes(socket_handle, response) != 0:
                 print("Failed to respond to configuration keep-alive")
                 return 1
-        elif packet_id[1] == 5:
+        elif packet_id[1] == pid_cfg_c_ping():
             if len(body) != packet_id[2] + 4:
                 print("Malformed configuration ping")
                 return 1
@@ -1873,18 +2023,18 @@ public def handle_configuration(socket_handle: int64,
             while index < 4:
                 payload[index] = body[packet_id[2] + index]
                 index = index + 1
-            int64[] response = encode_packet_frame(5, payload)
+            int64[] response = encode_packet_frame(pid_cfg_s_pong(), payload)
             if send_bytes(socket_handle, response) != 0:
                 print("Failed to respond to configuration ping")
                 return 1
-        elif packet_id[1] == 15:
+        elif packet_id[1] == pid_cfg_c_select_known_packs():
             int64[] selection = new int64[1]
             selection[0] = 0
-            int64[] response = encode_packet_frame(7, selection)
+            int64[] response = encode_packet_frame(pid_cfg_s_select_known_packs(), selection)
             if send_bytes(socket_handle, response) != 0:
                 print("Failed to respond to known-pack selection")
                 return 1
-        elif packet_id[1] == 0:
+        elif packet_id[1] == pid_cfg_c_cookie_request():
             int64[] key = read_string_field(body, packet_id[2], 32767)
             if key[0] != 1 or key[2] + key[1] != len(body):
                 print("Malformed configuration cookie request")
@@ -1901,11 +2051,11 @@ public def handle_configuration(socket_handle: int64,
                 cookie_payload[payload_index + index] = body[key[2] + index]
                 index = index + 1
             cookie_payload[len(cookie_payload) - 1] = 0
-            int64[] response = encode_packet_frame(1, cookie_payload)
+            int64[] response = encode_packet_frame(pid_cfg_s_cookie_response(), cookie_payload)
             if send_bytes(socket_handle, response) != 0:
                 print("Failed to respond to configuration cookie request")
                 return 1
-        elif packet_id[1] == 9:
+        elif packet_id[1] == pid_cfg_c_resource_pack_push():
             if packet_id[2] + 16 > len(body):
                 print("Malformed configuration resource-pack request")
                 return 1
@@ -1915,11 +2065,11 @@ public def handle_configuration(socket_handle: int64,
                 resource_pack_payload[index] = body[packet_id[2] + index]
                 index = index + 1
             resource_pack_payload[16] = 1
-            int64[] response = encode_packet_frame(6, resource_pack_payload)
+            int64[] response = encode_packet_frame(pid_cfg_s_resource_pack(), resource_pack_payload)
             if send_bytes(socket_handle, response) != 0:
                 print("Failed to decline configuration resource pack")
                 return 1
-        elif packet_id[1] == 20:
+        elif packet_id[1] == pid_cfg_c_code_of_conduct():
             int64[] conduct = read_string_field(body, packet_id[2], 32767)
             if conduct[0] != 1 or conduct[2] + conduct[1] != len(body):
                 print("Malformed server code of conduct")
@@ -1937,31 +2087,30 @@ public def handle_configuration(socket_handle: int64,
                 return 1
             mc_stdin_line_done()
             int64[] consent_acknowledgement = new int64[0]
-            int64[] response = encode_packet_frame(9, consent_acknowledgement)
+            int64[] response = encode_packet_frame(pid_cfg_s_accept_code_of_conduct(), consent_acknowledgement)
             if send_bytes(socket_handle, response) != 0:
                 print("Failed to accept server code of conduct")
                 return 1
-        elif packet_id[1] == 19:
+        elif packet_id[1] == pid_cfg_c_show_dialog():
             if handle_configuration_dialog(socket_handle, body, packet_id[2], false) != 0:
                 print("Could not process the server configuration dialog")
                 return 1
-        elif packet_id[1] == 7:
+        elif packet_id[1] == pid_cfg_c_registry_data():
             if parse_configuration_registry(body, packet_id[2], registry) == 0:
                 print("Malformed or unsupported configuration registry data")
                 return 1
-        elif packet_id[1] == 18:
+        elif packet_id[1] == pid_cfg_c_clear_dialog():
             print("Server cleared the active configuration dialog")
         elif is_ignorable_configuration_packet(packet_id[1]):
             print(f"Received configuration data packet {packet_id[1]}")
         else:
-            print(f"Unsupported configuration packet id {packet_id[1]}")
-            return 1
+            print(f"Ignoring unsupported configuration packet id {packet_id[1]}")
         packet_count = packet_count + 1
     print("Too many configuration packets without finish")
     return 1
 
 public def encode_login_start(username: str, username_length: int64) -> int64[]:
-    int64[] body = encode_varint(0)
+    int64[] body = encode_varint(pid_lg_s_hello())
     body = append_varint(body, username_length)
     int64 index = 0
     while index < username_length:
@@ -2031,7 +2180,7 @@ public def offline_login(host: str, port: int64, username: str) -> int:
         mc_tcp_close(socket_handle)
         print("Malformed login response packet")
         return 1
-    if packet_id[1] == 0:
+    if packet_id[1] == pid_lg_c_login_disconnect():
         int64[] reason = read_string_field(login_body, packet_id[2], 262144)
         mc_tcp_close(socket_handle)
         if reason[0] == 1:
@@ -2044,19 +2193,19 @@ public def offline_login(host: str, port: int64, username: str) -> int:
         else:
             print("Server rejected login with an invalid reason")
         return 1
-    if packet_id[1] == 1:
+    if packet_id[1] == pid_lg_c_hello():
         mc_tcp_close(socket_handle)
-        print("Server requires online-mode authentication; no credentials were sent")
+        print("Server requires online-mode authentication; this client uses local offline accounts only")
         return 1
-    if packet_id[1] == 4:
+    if packet_id[1] == pid_lg_c_custom_query():
         mc_tcp_close(socket_handle)
         print("Server requested a login plugin/proxy query; this is not supported")
         return 1
-    if packet_id[1] == 5:
+    if packet_id[1] == pid_lg_c_cookie_request():
         mc_tcp_close(socket_handle)
         print("Server requested a login cookie; cookie handling is not implemented")
         return 1
-    if packet_id[1] != 2:
+    if packet_id[1] != pid_lg_c_login_finished():
         mc_tcp_close(socket_handle)
         print("Unexpected login response packet")
         return 1
@@ -2126,7 +2275,7 @@ public def offline_login(host: str, port: int64, username: str) -> int:
         print("Unexpected bytes in login success packet")
         return 1
     int64[] empty = new int64[0]
-    int64[] acknowledgement = encode_packet_frame(3, empty)
+    int64[] acknowledgement = encode_packet_frame(pid_lg_s_login_acknowledged(), empty)
     if send_bytes(socket_handle, acknowledgement) != 0:
         mc_tcp_close(socket_handle)
         print("Failed to acknowledge login success")
@@ -2186,7 +2335,7 @@ public def status_ping(host: str, port: int64) -> int:
         status_body[index] = status_frame[3 + index]
         index = index + 1
     int64[] packet_id = decode_varint(status_body, 0)
-    if packet_id[0] != 1 or packet_id[1] != 0:
+    if packet_id[0] != 1 or packet_id[1] != pid_st_c_status_response():
         mc_tcp_close(socket_handle)
         print("Unexpected status response packet")
         return 1
@@ -2227,7 +2376,7 @@ public def status_ping(host: str, port: int64) -> int:
         pong_body[index] = pong_frame[3 + index]
         index = index + 1
     int64[] pong_id = decode_varint(pong_body, 0)
-    if pong_id[0] != 1 or (pong_id[1] != 1 or len(pong_body) - pong_id[2] != 8):
+    if pong_id[0] != 1 or (pong_id[1] != pid_st_c_pong_response() or len(pong_body) - pong_id[2] != 8):
         mc_tcp_close(socket_handle)
         print("Unexpected pong packet")
         return 1

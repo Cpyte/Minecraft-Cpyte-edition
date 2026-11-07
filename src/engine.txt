@@ -6,6 +6,7 @@
 engine/native.cpy
 engine/core.cpy
 util/strings.cpy
+protocol_ids.cpy
 buf/vbuf.cpy
 io/nbt.cpy
 world/palette.cpy
@@ -13,3 +14,5 @@ world/section.cpy
 world/heightmap.cpy
 world/world.cpy
 world/protocol_chunk.cpy
+world/blockdb.cpy
+world/mesher.cpy

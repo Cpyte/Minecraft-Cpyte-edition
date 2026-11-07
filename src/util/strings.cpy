@@ -147,6 +147,18 @@ public def vstr_text(s: VStr*) -> str:
     return vt_dup(s.data)
 
 
+public def vstr_put_text(s: VStr*, text: str) -> void:
+    int n = vt_strlen(text)
+    int i = 0
+    while i < n:
+        vstr_put(s, vt_at(text, i))
+        i += 1
+
+
+public def vstr_hash(s: VStr*) -> uint64:
+    return (uint64)vt_fnv1a(s.data)
+
+
 public def vstr_free(s: VStr*) -> void:
     if s == null:
         return
