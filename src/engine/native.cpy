@@ -342,15 +342,15 @@ ccode:
      * command is fixed (no user input), and the tool falls back gracefully. */
     int vt_run_blockdb_setup(void) {
         int rc = 0;
-#ifdef _WIN32
+    #ifdef _WIN32
         rc = system("py -3 tools/setup_blockdb.py --auto");
         if (rc == 0) return 0;
         rc = system("python tools/setup_blockdb.py --auto");
-        return rc == 0 ? 0 : 1;
-#else
+    #else
         rc = system("python3 tools/setup_blockdb.py --auto");
         if (rc == 0) return 0;
         rc = system("python tools/setup_blockdb.py --auto");
-        return rc == 0 ? 0 : 1;
-#endif
+    #endif
+        if (rc == 0) return 0;
+        return 1;
     }

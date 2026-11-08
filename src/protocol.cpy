@@ -1950,26 +1950,13 @@ public def play_session_loop(socket_handle: int64, world: VWorld*,
                 print("Failed to acknowledge the configuration transition")
                 return 1
             received_play_login = false
-            if handle_configuration(socket_handle, registry) != 0:
-                print("Configuration after Play failed")
-                return 1
-            print("Re-entered Play after configuration")
+            return 2
         packet_count = packet_count + 1
     if not received_play_login:
         print("Play packet limit reached before Play login")
     else:
         print("Play packet limit reached")
     return 1
-
-
-public def play_session(socket_handle: int64,
-                        registry: VDimensionRegistry*) -> int:
-    VWorld* world = vworld_new(1024, 0, 1,
-                               registry.block_global_bits,
-                               registry.biome_global_bits)
-    int result = play_session_loop(socket_handle, world, registry)
-    vworld_free(world)
-    return result
 
 
 public def handle_configuration(socket_handle: int64,
@@ -2108,6 +2095,24 @@ public def handle_configuration(socket_handle: int64,
         packet_count = packet_count + 1
     print("Too many configuration packets without finish")
     return 1
+
+public def play_session(socket_handle: int64,
+                        registry: VDimensionRegistry*) -> int:
+    VWorld* world = vworld_new(1024, 0, 1,
+                               registry.block_global_bits,
+                               registry.biome_global_bits)
+    int result = play_session_loop(socket_handle, world, registry)
+    # The server may send Play login again without ending the connection, so
+    # the same world is reused across configuration cycles.
+    while result == 2:
+        int configured = handle_configuration(socket_handle, registry)
+        if configured != 0:
+            result = 1
+            break
+        result = play_session_loop(socket_handle, world, registry)
+    vworld_free(world)
+    return result
+
 
 public def encode_login_start(username: str, username_length: int64) -> int64[]:
     int64[] body = encode_varint(pid_lg_s_hello())

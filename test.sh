@@ -14,6 +14,8 @@ SMOKE_TESTS=(
   tests/heightmap.txt
   tests/registry.txt
   tests/chunk_light.txt
+  tests/protocol_ids.txt
+  tests/mesher.txt
 )
 
 if [ "$#" -ne 0 ]; then

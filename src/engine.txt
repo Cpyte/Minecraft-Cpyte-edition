@@ -16,3 +16,5 @@ world/world.cpy
 world/protocol_chunk.cpy
 world/blockdb.cpy
 world/mesher.cpy
+proto/shape.cpy
+proto/wire.cpy

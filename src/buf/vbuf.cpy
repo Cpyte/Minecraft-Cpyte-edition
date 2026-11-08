@@ -167,6 +167,16 @@ public def vbuf_avail(b: VBuf*) -> int:
     return b.len - b.pos
 
 
+# Cpyte cannot read through two levels of struct field in one expression, so
+# callers that only hold a VWire use these instead of `w.b.pos`.
+public def vbuf_pos(b: VBuf*) -> int:
+    return b.pos
+
+
+public def vbuf_len(b: VBuf*) -> int:
+    return b.len
+
+
 # Keeps the low 32 bits of `raw` and sign extends them into a Cpyte int.
 public def vsign_extend_32(raw: uint64) -> int:
     return vt_sign_extend_32((uint64)raw)

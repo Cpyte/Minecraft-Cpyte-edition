@@ -1,5 +1,4 @@
 # Protocol 777 packet-id table test bundle.
 use ../src/engine.txt
-../src/protocol_ids.cpy
 harness.cpy
 test_protocol_ids.cpy
