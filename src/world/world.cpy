@@ -10,6 +10,7 @@ struct VWorld:
     int section_count
     int block_global_bits
     int biome_global_bits
+    int dimension_id
     int* chunk_x
     int* chunk_z
     char* columns
@@ -132,6 +133,7 @@ public def vworld_new(capacity: int, min_section: int, section_count: int,
     world.section_count = section_count
     world.block_global_bits = block_global_bits
     world.biome_global_bits = biome_global_bits
+    world.dimension_id = 0
     world.chunk_x = vt_calloc_int(capacity)
     world.chunk_z = vt_calloc_int(capacity)
     world.columns = vt_calloc_ptrs(capacity)
@@ -156,6 +158,19 @@ public def vworld_free(world: VWorld*) -> void:
 
 public def vworld_chunk_count(world: VWorld*) -> int:
     return world.count
+
+
+# The dimension id the server named in Play login. Saving keeps one world
+# folder per dimension, so chunks from two dimensions never share a region.
+public def vworld_set_dimension_id(world: VWorld*, dimension_id: int) -> void:
+    if world != null:
+        world.dimension_id = dimension_id
+
+
+public def vworld_dimension_id(world: VWorld*) -> int:
+    if world == null:
+        return 0
+    return world.dimension_id
 
 
 public def vworld_set_dimension(world: VWorld*, min_section: int,

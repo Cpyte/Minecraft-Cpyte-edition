@@ -381,6 +381,39 @@ public def sec_sky_light_set(s: VSection*, x: int, y: int, z: int, level: int) -
     sec_light_set(s.sky_light, sec_block_index(x, y, z), level)
 
 
+# Flat-index accessors for the native parallel mesher (engine/mesher.c). Its
+# worker threads read decoded sections through these C-callable symbols instead
+# of the paletted-container path, so the inner face loop never touches the GC.
+# The index is the section's own layout: x + z * 16 + y * 256.
+public def sec_block_at_index(s: VSection*, index: int) -> int:
+    if s == null or index < 0 or index >= sec_block_count():
+        return 0
+    return vcont_at(s.blocks, index)
+
+
+# Flat biome accessor for the native mesher: index is x + z * 4 + y * 16 over
+# the section's 4x4x4 biome grid.
+public def sec_biome_at_index(s: VSection*, index: int) -> int:
+    if s == null or index < 0 or index >= sec_biome_count():
+        return 0
+    return vcont_at(s.biomes, index)
+
+
+# Packed sky/block light, sky * 16 + block, matching vworld_light_at. An absent
+# section reads as full sky so a partially loaded world stays visible.
+public def sec_light_packed_at(s: VSection*, x: int, y: int, z: int) -> int:
+    if sec_index_ok(x, y, z, 16) == 0:
+        return 15 * 16
+    int index = sec_block_index(x, y, z)
+    return sec_light_at(s.sky_light, index) * 16 + sec_light_at(s.block_light, index)
+
+
+public def sec_light_packed_index(s: VSection*, index: int) -> int:
+    if s == null or index < 0 or index >= sec_block_count():
+        return 15 * 16
+    return sec_light_at(s.sky_light, index) * 16 + sec_light_at(s.block_light, index)
+
+
 # Shrinks both containers before a save so the palette and data width are the
 # narrowest the contents allow.
 public def sec_compact(s: VSection*) -> void:

@@ -80,19 +80,19 @@ public def pw_sub_shape(name: str) -> str:
     if str_equals(name, "book_pages"):
         return "ar<st>"
     if str_equals(name, "c_idarvi"):
-        return "i,d,,,a,r,<,v,i,>"
+        return "id,ar<vi>"
     if str_equals(name, "c_idarxc_idarvi"):
-        return "i,d,,,a,r,<,x,<,c,_,i,d,a,r,v,i,>,>"
+        return "id,ar<x<c_idarvi>>"
     if str_equals(name, "c_idobt"):
-        return "i,d,,,o,b,t"
+        return "id,obt"
     if str_equals(name, "c_st64stost1024"):
-        return "s,t,6,4,,,s,t,,,o,s,t,1,0,2,4"
+        return "st64,st,ost1024"
     if str_equals(name, "c_ststst"):
-        return "s,t,,,s,t,,,s,t"
+        return "st,st,st"
     if str_equals(name, "c_uust16arxc_st64stost1024"):
-        return "u,u,,,s,t,1,6,,,a,r,<,x,<,c,_,s,t,6,4,s,t,o,s,t,1,0,2,4,>,>"
+        return "uu,st16,ar<x<c_st64stost1024>>"
     if str_equals(name, "c_viidi8viovibobooxglobal_posvivi"):
-        return "v,i,,,i,d,,,i,8,,,v,i,,,o,v,i,,,b,o,,,b,o,,,o,x,<,g,l,o,b,a,l,_,p,o,s,>,,,v,i,,,v,i"
+        return "vi,id,i8,vi,ovi,bo,bo,ox<global_pos>,vi,vi"
     if str_equals(name, "chat_type_bound"):
         return "vi,bt,obt"
     if str_equals(name, "chunk_biome_data"):

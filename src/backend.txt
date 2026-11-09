@@ -1,4 +1,5 @@
-# Final protocol client bundle: engine modules followed by the network client.
+# Final protocol client bundle: engine modules followed by renderer and the network client.
 use engine.txt
+render/renderer.cpy
 protocol.cpy
 client_main.cpy

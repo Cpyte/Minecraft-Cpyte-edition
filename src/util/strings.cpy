@@ -155,6 +155,54 @@ public def vstr_put_text(s: VStr*, text: str) -> void:
         i += 1
 
 
+# Characters [from, to) of `text`, appended without producing a slice of their
+# own. Table building and lookup run over tens of thousands of short ranges,
+# and a `str_slice` per range is a per-row allocation that nothing can free
+# until the whole registry is dropped.
+public def vstr_put_slice(s: VStr*, text: str, from: int, to: int) -> void:
+    int n = vt_strlen(text)
+    if from < 0:
+        from = 0
+    if to > n:
+        to = n
+    int i = from
+    while i < to:
+        vstr_put(s, vt_at(text, i))
+        i = i + 1
+
+
+public def vstr_clear(s: VStr*) -> void:
+    s.len = 0
+    vt_put(s.data, 0, code_nul())
+
+
+def text_is_blank(code: int) -> int:
+    if code == 32 or code == 9 or code == 13 or code == 10:
+        return 1
+    return 0
+
+
+# Characters [from, to) of `text`, with the blanks around them dropped. A table
+# row has to lose its trailing carriage return before it can be parsed, and
+# doing that with a trim over a slice allocates twice for every row.
+public def vstr_put_trimmed_slice(s: VStr*, text: str, from: int, to: int) -> void:
+    int n = vt_strlen(text)
+    if from < 0:
+        from = 0
+    if to > n:
+        to = n
+    int begin = from
+    int end = to
+    while begin < end and text_is_blank(vt_at(text, begin)) == 1:
+        begin = begin + 1
+    while end > begin and text_is_blank(vt_at(text, end - 1)) == 1:
+        end = end - 1
+    int i = begin
+    while i < end:
+        vstr_put(s, vt_at(text, i))
+        i = i + 1
+
+
 public def vstr_hash(s: VStr*) -> uint64:
     return (uint64)vt_fnv1a(s.data)
 

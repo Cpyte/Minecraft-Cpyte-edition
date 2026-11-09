@@ -199,7 +199,7 @@ COMPOSITES = {}
 
 def composite(tokens):
     """Register an anonymous composite made of `tokens`, return its name."""
-    shape = ",".join(tokens)
+    shape = tokens if isinstance(tokens, str) else ",".join(tokens)
     for name, existing in COMPOSITES.items():
         if existing == shape:
             return name

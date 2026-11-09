@@ -285,6 +285,9 @@ public def vcont_distinct_count(c: VContainer*) -> int:
 
 def vcont_rebuild_indirect(c: VContainer*, values: int*, bits: int) -> void:
     vcont_reset(c, vt_iget(values, 0))
+    int width_limit = vcont_capacity_bits(bits)
+    if width_limit > c.palette_limit:
+        c.palette_limit = width_limit
     vcont_alloc_words(c, bits)
     c.mode = vcont_indirect_mode()
     int i = 0

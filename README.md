@@ -19,8 +19,18 @@ absolute heights and queried through `vworld_height_at`, an unstored type is
 walked but dropped, and a stored type whose long count is not the expected 36
 rejects the chunk. Block entities are validated but not retained. The block-state global
 width remains fixed to the target protocol profile; custom or modded block
-registries are not parsed. Rendering and world simulation are not connected,
-and most Play packets are not implemented.
+registries are not parsed. Most Play packets are still only partially handled,
+and there is no client-side world simulation.
+
+Meshed terrain is drawn. The same session that decodes a server's world can open
+a Vulkan window that renders it: `./build.sh src/renderer.txt` builds the
+standalone window, and backend `main` mode 5 runs a login with the window
+attached. The client publishes the finished mesh batches, the player's state and
+the chat text it prints to the renderer through C-side channels, so the protocol
+code never calls Vulkan itself. What the window does not yet draw — entities,
+block entities, the tab list, the target outline, particles, clouds and weather
+— is listed in [`docs/PARITY.md`](docs/PARITY.md), along with the fact that the
+integrated window has not been run against a real server.
 
 The wire palette rules and current parity scope are recorded in
 [`docs/PARITY.md`](docs/PARITY.md). This is a protocol/world-data client, not a

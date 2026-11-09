@@ -1,0 +1,30 @@
+[workspace]
+
+[package]
+name = "wew-pumpkin-host"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "In-process Minecraft Java server for the Cpyte client, over Pumpkin"
+
+# A dynamic library, not an archive: the client opens it at run time, so one
+# executable does both multiplayer and single player and a build without this
+# library simply reports that single player is unavailable. It also means the
+# Rust system dependencies resolve here at link time rather than in build.sh.
+[lib]
+name = "pumpkin_host"
+crate-type = ["cdylib"]
+
+[dependencies]
+pumpkin-core = { path = "../vendor/pumpkin/crates/pumpkin-core" }
+pumpkin-config = { path = "../vendor/pumpkin/crates/pumpkin-config" }
+pumpkin-util = { path = "../vendor/pumpkin/crates/pumpkin-util" }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "io-util", "macros"] }
+
+# A plugin build of this library is never shipped; the size of the static
+# archive is what the client links, and Pumpkin's dependency tree is large.
+[profile.release]
+opt-level = 1
+debug = false
+lto = false
+panic = "unwind"

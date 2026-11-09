@@ -17,11 +17,13 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <windns.h>
 #include <io.h>
 #include <process.h>
 
 typedef SOCKET mc_socket;
 typedef SSIZE_T mc_ssize;
+typedef int mc_send_length;
 typedef WSAPOLLFD mc_pollfd;
 #define mc_socket_invalid INVALID_SOCKET
 #define mc_socket_error SOCKET_ERROR
@@ -41,15 +43,18 @@ static void mc_start_winsock(void) {
 }
 
 #else
+#include <arpa/nameser.h>
 #include <dlfcn.h>
 #include <netdb.h>
 #include <poll.h>
+#include <resolv.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
 
 typedef int mc_socket;
 typedef ssize_t mc_ssize;
+typedef size_t mc_send_length;
 typedef struct pollfd mc_pollfd;
 #define mc_socket_invalid ((mc_socket)-1)
 #define mc_socket_error (-1)
@@ -202,6 +207,15 @@ double mc_float_from_be(int64_t b0, int64_t b1, int64_t b2, int64_t b3) {
     return (double)value;
 }
 
+double mc_sqrt(double value) {
+    if (value <= 0.0) return 0.0;
+    return sqrt(value);
+}
+
+double mc_atan2(double y, double x) {
+    return atan2(y, x);
+}
+
 int64_t mc_double_be_byte(double value, int64_t index) {
     uint64_t bits;
     if (index < 0 || index >= 8) return -1;
@@ -277,9 +291,145 @@ int64_t mc_tcp_connect(char *host, int64_t port) {
     return (int64_t)fd;
 }
 
+/* Resolve the Minecraft SRV record _minecraft._tcp.<host>. On a hit, write the
+ * lowest-priority target hostname (trailing dot stripped) and its port and
+ * return 1; return 0 when there is no usable record so the caller falls back to
+ * the default port. DnsQuery on Windows, res_query on macOS/Linux. */
+#ifdef _WIN32
+int mc_resolve_srv(const char *host, char *target, int target_capacity,
+                   int64_t *port) {
+    char query[512];
+    DNS_RECORDA *records = NULL;
+    DNS_RECORDA *record;
+    int found = 0;
+    int best_priority = 0x7fffffff;
+    if (host == NULL || target == NULL || port == NULL || target_capacity < 2)
+        return 0;
+    snprintf(query, sizeof(query), "_minecraft._tcp.%s", host);
+    mc_start_winsock();
+    if (DnsQuery_A(query, DNS_TYPE_SRV, DNS_QUERY_STANDARD, NULL, &records,
+                   NULL) != 0)
+        return 0;
+    for (record = records; record != NULL; record = record->pNext) {
+        DNS_SRV_DATAA *srv;
+        size_t length;
+        if (record->wType != DNS_TYPE_SRV) continue;
+        srv = &record->Data.Srv;
+        if ((int)srv->wPriority >= best_priority) continue;
+        best_priority = (int)srv->wPriority;
+        length = strlen(srv->pNameTarget);
+        if (length > 0 && srv->pNameTarget[length - 1] == '.') length--;
+        if (length == 0 || length >= (size_t)target_capacity) continue;
+        memcpy(target, srv->pNameTarget, length);
+        target[length] = 0;
+        *port = (int64_t)srv->wPort;
+        found = 1;
+    }
+    DnsRecordListFree(records, DnsFreeRecordList);
+    return found;
+}
+#else
+int mc_resolve_srv(const char *host, char *target, int target_capacity,
+                   int64_t *port) {
+    char query[512];
+    unsigned char answer[4096];
+    int length;
+    ns_msg msg;
+    int count;
+    int i;
+    int best_priority = 0x7fffffff;
+    const unsigned char *best_rdata = NULL;
+    int best_port = 0;
+    char name[NS_MAXDNAME];
+    int expanded;
+    size_t name_length;
+    if (host == NULL || target == NULL || port == NULL || target_capacity < 2)
+        return 0;
+    snprintf(query, sizeof(query), "_minecraft._tcp.%s", host);
+    length = res_query(query, ns_c_in, ns_t_srv, answer, (int)sizeof(answer));
+    if (length < 0) return 0;
+    if (ns_initparse(answer, length, &msg) < 0) return 0;
+    count = ns_msg_count(msg, ns_s_an);
+    for (i = 0; i < count; i++) {
+        ns_rr rr;
+        const unsigned char *rdata;
+        int rdlen;
+        int priority;
+        if (ns_parserr(&msg, ns_s_an, i, &rr) < 0) continue;
+        if (ns_rr_type(rr) != ns_t_srv) continue;
+        rdata = ns_rr_rdata(rr);
+        rdlen = ns_rr_rdlen(rr);
+        if (rdlen < 7) continue;
+        priority = (rdata[0] << 8) | rdata[1];
+        if (priority >= best_priority) continue;
+        best_priority = priority;
+        best_rdata = rdata;
+        best_port = (rdata[4] << 8) | rdata[5];
+    }
+    if (best_rdata == NULL) return 0;
+    expanded = dn_expand(answer, answer + length, best_rdata + 6, name,
+                         (int)sizeof(name));
+    if (expanded < 0) return 0;
+    name_length = strlen(name);
+    if (name_length > 0 && name[name_length - 1] == '.') name_length--;
+    if (name_length == 0 || name_length >= (size_t)target_capacity) return 0;
+    memcpy(target, name, name_length);
+    target[name_length] = 0;
+    *port = (int64_t)best_port;
+    return 1;
+}
+#endif
+
 static unsigned char send_buffer[4096];
 static size_t send_length = 0;
 static mc_socket send_socket = mc_socket_invalid;
+
+/* ---- Transport dispatch --------------------------------------------------
+ *
+ * The Play loop reaches a peer through five entry points plus mc_poll_events,
+ * and passes an opaque handle. Normally that is a socket. An embedded server,
+ * linked only by the single-player bundle, installs a transport here whose
+ * bytes go to an in-process pipe instead: no socket family, no loopback and no
+ * syscall per packet. Installed handles are negative so they can never be
+ * mistaken for a descriptor, and only one is supported because the client is
+ * the only thing in the process that connects. */
+typedef struct {
+    int64_t (*send_begin)(int64_t handle);
+    int64_t (*send_byte)(int64_t value);
+    int64_t (*send_end)(void);
+    int64_t (*recv_byte)(int64_t handle);
+    int64_t (*close)(int64_t handle);
+    int64_t (*ready)(int64_t handle);
+} mc_transport;
+
+static mc_transport mc_alt;
+static int64_t mc_alt_handle = -1;
+/* Which transport the send_begin/byte/end sequence currently belongs to. */
+static int mc_alt_sending = 0;
+
+int64_t mc_install_transport(int64_t handle, int64_t send_begin, int64_t send_byte,
+                             int64_t send_end, int64_t recv_byte, int64_t close,
+                             int64_t ready) {
+    /* -1 is the "no transport installed" value, so it is not a usable handle. */
+    if (handle >= -1) return -1;
+    mc_alt.send_begin = (int64_t (*)(int64_t))(intptr_t)send_begin;
+    mc_alt.send_byte = (int64_t (*)(int64_t))(intptr_t)send_byte;
+    mc_alt.send_end = (int64_t (*)(void))(intptr_t)send_end;
+    mc_alt.recv_byte = (int64_t (*)(int64_t))(intptr_t)recv_byte;
+    mc_alt.close = (int64_t (*)(int64_t))(intptr_t)close;
+    mc_alt.ready = (int64_t (*)(int64_t))(intptr_t)ready;
+    mc_alt_handle = handle;
+    return 0;
+}
+
+static int mc_is_alt(int64_t handle) {
+    return mc_alt_handle >= 0 && handle == mc_alt_handle;
+}
+
+static void mc_clear_alt(void) {
+    memset(&mc_alt, 0, sizeof(mc_alt));
+    mc_alt_handle = -1;
+}
 
 static int64_t flush_send_buffer(void) {
     size_t sent = 0;
@@ -287,10 +437,10 @@ static int64_t flush_send_buffer(void) {
         mc_ssize result;
 #ifdef MSG_NOSIGNAL
         result = send(send_socket, (const char *)(send_buffer + sent),
-                      (int)(send_length - sent), MSG_NOSIGNAL);
+                      (mc_send_length)(send_length - sent), MSG_NOSIGNAL);
 #else
         result = send(send_socket, (const char *)(send_buffer + sent),
-                      (int)(send_length - sent), 0);
+                      (mc_send_length)(send_length - sent), 0);
 #endif
         if (result < 0 && mc_is_interrupted(mc_last_error())) continue;
         if (result <= 0) return -1;
@@ -301,12 +451,18 @@ static int64_t flush_send_buffer(void) {
 }
 
 int64_t mc_tcp_send_begin(int64_t socket_handle) {
+    if (mc_is_alt(socket_handle)) {
+        mc_alt_sending = 1;
+        return mc_alt.send_begin(socket_handle);
+    }
+    mc_alt_sending = 0;
     send_socket = (mc_socket)socket_handle;
     send_length = 0;
     return 0;
 }
 
 int64_t mc_tcp_send_byte(int64_t value) {
+    if (mc_alt_sending) return mc_alt.send_byte(value);
     if (value < 0 || value > 255) return -1;
     if (send_length == sizeof(send_buffer) && flush_send_buffer() != 0) return -1;
     send_buffer[send_length++] = (unsigned char)value;
@@ -314,6 +470,10 @@ int64_t mc_tcp_send_byte(int64_t value) {
 }
 
 int64_t mc_tcp_send_end(void) {
+    if (mc_alt_sending) {
+        mc_alt_sending = 0;
+        return mc_alt.send_end();
+    }
     return flush_send_buffer();
 }
 
@@ -325,6 +485,7 @@ static mc_socket receive_socket = mc_socket_invalid;
 int64_t mc_tcp_recv_byte(int64_t socket_handle) {
     mc_socket fd = (mc_socket)socket_handle;
     mc_ssize received;
+    if (mc_is_alt(socket_handle)) return mc_alt.recv_byte(socket_handle);
     if (receive_socket != fd) {
         receive_socket = fd;
         receive_offset = 0;
@@ -343,6 +504,11 @@ int64_t mc_tcp_recv_byte(int64_t socket_handle) {
 
 int64_t mc_tcp_close(int64_t socket_handle) {
     compression_threshold = -1;
+    if (mc_is_alt(socket_handle)) {
+        int64_t result = mc_alt.close(socket_handle);
+        mc_clear_alt();
+        return result;
+    }
     if (receive_socket == (mc_socket)socket_handle) {
         receive_socket = mc_socket_invalid;
         receive_offset = 0;
@@ -501,6 +667,12 @@ int64_t mc_prepare_stdin(void) {
 
 int64_t mc_poll_events(int64_t socket_handle) {
     int events = 0;
+    if (mc_is_alt(socket_handle)) {
+        if (mc_alt.ready(socket_handle) != 0) return 1;
+        /* Nothing to wait on, so ask for the terminal half alone; -1 makes the
+         * branches below skip the descriptor entirely. */
+        return mc_poll_events((int64_t)-1);
+    }
 #ifdef _WIN32
     mc_pollfd descriptor;
     mc_socket fd = (mc_socket)socket_handle;
@@ -575,6 +747,39 @@ int64_t mc_poll_events(int64_t socket_handle) {
     if (stdin_input_error) return -1;
     return events;
 #endif
+}
+
+/* A line typed into the render window's chat field joins the byte queue the
+ * terminal reader feeds, so the Play loop cannot tell the two apart and the
+ * window gets every verb the terminal has: chat, commands and /quit.
+ * Returns 1 when the line was queued and is ready, 0 when it was already in
+ * the buffer, and -2 when the queue is full and the caller should retry. */
+int64_t mc_stdin_inject_line(const char *text) {
+    size_t length;
+    if (text == NULL) return -1;
+    length = strlen(text);
+    if (length == 0) return 0;
+    if (length + 1 > sizeof(stdin_pending)) return -1;
+#ifdef _WIN32
+    EnterCriticalSection(&stdin_lock);
+#endif
+    if (sizeof(stdin_pending) - stdin_pending_length < length + 1) {
+#ifdef _WIN32
+        LeaveCriticalSection(&stdin_lock);
+#endif
+        return -2;
+    }
+    memcpy(stdin_pending + stdin_pending_length, text, length);
+    stdin_pending_length += length;
+    stdin_pending[stdin_pending_length++] = '\n';
+    {
+        int extracted = extract_stdin_line();
+#ifdef _WIN32
+        if (extracted > 0) WakeConditionVariable(&stdin_data_ready);
+        LeaveCriticalSection(&stdin_lock);
+#endif
+        return extracted > 0 ? 1 : 0;
+    }
 }
 
 int64_t mc_stdin_line_length(void) {

@@ -1,0 +1,5 @@
+# Protocol 777 Play wire-format test bundle.
+use ../src/engine.txt
+../src/protocol.cpy
+harness.cpy
+test_protocol_play.cpy

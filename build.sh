@@ -51,8 +51,13 @@ case "$(uname -s)" in
     # Cpyte's numeric runtime needs the MSYS2 GMP/MPFR development headers.
     export CPYTE_GMP_INCLUDE="$(cygpath -w "$PREFIX/include")"
     export CPYTE_MPFR_INCLUDE="$(cygpath -w "$PREFIX/include")"
-    # src/network.c needs Winsock and zlib import libraries on Windows.
-    export CPYTE_EXTRA_LIBS="${CPYTE_EXTRA_LIBS:+$CPYTE_EXTRA_LIBS }ws2_32 z"
+    # src/network.c needs Winsock, the DNS resolver and zlib import libraries on
+    # Windows.
+    export CPYTE_EXTRA_LIBS="${CPYTE_EXTRA_LIBS:+$CPYTE_EXTRA_LIBS }ws2_32 dnsapi z"
+    ;;
+  Darwin)
+    export CPATH="/opt/homebrew/include${CPATH:+:$CPATH}"
+    export LIBRARY_PATH="/opt/homebrew/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
     ;;
 esac
 
@@ -70,9 +75,51 @@ esac
 rm -f "$SOURCE_DIR/$NAME.o" "$SOURCE_DIR/$NAME.gc.o" \
      "$SOURCE_DIR/$NAME.runpy.o" "$SOURCE_DIR/$NAME.runtime.o"
 
-# Avoid the current compiler's LLVM loop-pass assertion, including on macOS's
-# default Bash 3.2 where expanding an empty array under `set -u` fails.
-"$PYTHON" -m cpyte build \
+# Build and link.
+#
+# compiling.aot_link_executable() tries the first link with ['-lm'] only and
+# bails out unless the linker complains about a GMP/MPFR symbol, so the zlib
+# symbols our C imports need are never resolved. Patching
+# compiling.aot_link_libraries() does not help: that list is only consulted on
+# the GMP retry. Inject the extra libraries into every link attempt instead.
+"$PYTHON" -c "
+import sys
+from cpyte import compiling, mainpie
+
+extra = ['z']
+if sys.platform == 'win32':
+    extra.append('ws2_32')
+    extra.append('dnsapi')
+else:
+    extra.append('resolv')
+    extra.append('vulkan')
+    extra.append('SDL2')
+    extra.append('png')
+    # src/engine/host.c opens the embedded server library at run time. glibc
+    # only folded dl*() into libc from 2.34, so link it explicitly.
+    if sys.platform.startswith('linux'):
+        extra.append('dl')
+
+def link_with_extra(linker, objects, output, **kwargs):
+    original = linker.link
+    def link(objs, out, libraries=None, library_paths=None, **kw):
+        libs = list(libraries or [])
+        lib_paths = list(library_paths or [])
+        for name in extra:
+            if name not in libs:
+                libs.append(name)
+        if sys.platform == 'darwin' and '/opt/homebrew/lib' not in lib_paths:
+            lib_paths.append('/opt/homebrew/lib')
+        return original(objs, out, libraries=libs, library_paths=lib_paths, **kw)
+    linker.link = link
+    try:
+        return compiling.aot_link_executable(linker, objects, output, **kwargs)
+    finally:
+        linker.link = original
+
+mainpie.aot_link_executable = link_with_extra
+mainpie.main()
+" build \
   --opt 1 --output "dist/$NAME.exe" "$SOURCE"
 
 echo "built: dist/$NAME.exe"

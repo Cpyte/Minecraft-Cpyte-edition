@@ -117,3 +117,35 @@ public def sec_read_wire_sections(b: VBuf*, count: int, min_section: int,
         return null
     *ok = 1
     return sections
+
+
+# Chunks Biomes repeats the biome container of every section in a column, in
+# ascending y, with no block container and no light. The decoded values are
+# copied into the section already in memory; a column the client has not
+# loaded is walked and dropped rather than materialised half-empty.
+public def sec_apply_wire_biomes(b: VBuf*, world: VWorld*, chunk_x: int,
+                                 chunk_z: int, count: int, min_section: int,
+                                 biome_global_bits: int) -> int:
+    if b == null or world == null or count < 1:
+        return 0
+    int i = 0
+    while i < count:
+        VSection* decoded = sec_new_for_wire(min_section + i,
+                                             sec_blocks_direct_bits(),
+                                             biome_global_bits)
+        int biomes_ok = sec_wire_read_container(b, decoded.biomes,
+                                                sec_biome_count(), false,
+                                                biome_global_bits)
+        if biomes_ok == 0:
+            sec_free(decoded)
+            return 0
+        VSection* target = vworld_section(world, chunk_x, chunk_z,
+                                          min_section + i)
+        if target != null:
+            int at = 0
+            while at < sec_biome_count():
+                vcont_set(target.biomes, at, vcont_at(decoded.biomes, at))
+                at += 1
+        sec_free(decoded)
+        i += 1
+    return 1

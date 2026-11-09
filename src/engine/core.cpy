@@ -105,3 +105,13 @@ public def i32_min() -> int:
 
 public def i32_max() -> int:
     return 2147483647
+
+
+# A negative literal written straight into the `return` of a `-> int64` def is
+# folded into the unsigned constant 4294967295, so the caller sees a huge
+# positive number and every `result < 0` test silently misses. Building the same
+# value in a local keeps the sign, which is what the byte walkers need.
+public def i64_failed() -> int64:
+    int64 failure = 0
+    failure = failure - 1
+    return failure

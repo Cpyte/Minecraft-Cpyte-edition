@@ -2,9 +2,13 @@
 #
 # The mesher needs three things for a block state id: whether it is air, what
 # geometry it has, and whether it hides the neighbour's face. The block state
-# id -> block mapping is delivered by the data generator's blocks report, which
-# tools/gen_blockdb.py turns into a compact binary read by the C layer in
-# src/engine/blockdb.c.
+# id -> block mapping comes from the vanilla data generator's blocks report,
+# packed into a compact binary read by the C layer in src/engine/blockdb.c.
+#
+# On first launch the executable builds that binary itself: blockdb_setup.c
+# discovers a local Minecraft installation, runs its Java data generator and
+# writes generated/blockdb.bin. No scripting runtime is involved. tools/ holds
+# optional developer equivalents, never required to run the client.
 #
 # The database is optional. Without it the mesher falls back to state 0 = air
 # and every other state = opaque cube, which keeps a world visible even when
@@ -15,6 +19,7 @@
 # docs/PARITY_BOUNDARY.md.
 
 import "../engine/blockdb.c"
+import "../engine/blockdb_setup.c"
 
 
 # ---- classification flags, matching tools/gen_blockdb.py ---------------------
@@ -90,6 +95,55 @@ public def blockdb_flags(state: int) -> int:
 
 public def blockdb_protocol(state: int) -> int:
     return vt_blockdb_protocol(state)
+
+
+# ---- geometry shape and tint (name-based heuristics) -------------------------
+
+public def block_shape_cube() -> int:
+    return 0
+
+
+public def block_shape_skip() -> int:
+    return 255
+
+
+public def block_tint_none() -> int:
+    return 0
+
+
+public def block_tint_grass() -> int:
+    return 1
+
+
+public def block_tint_foliage() -> int:
+    return 2
+
+
+public def block_tint_water() -> int:
+    return 3
+
+
+# Canonical geometry code for a state; see engine/blockdb.c for the table.
+public def blockdb_shape(state: int) -> int:
+    return ((int)vt_blockdb_shape_tint(state)) & 255
+
+
+public def blockdb_tint(state: int) -> int:
+    return (((int)vt_blockdb_shape_tint(state)) >> 8) & 255
+
+
+# Packed 0xRRGGBB tint for a biome id and tint kind. Defaults to the plains
+# colours until the registry layer fills the override table.
+public def biome_color(biome: int, kind: int) -> int:
+    return (int)vt_biome_color(biome, kind)
+
+
+public def biome_color_set(biome: int, grass: int, foliage: int, water: int) -> void:
+    vt_biome_color_set(biome, grass, foliage, water)
+
+
+public def biome_colors_reset() -> void:
+    vt_biome_colors_reset()
 
 
 public def blockdb_has(state: int, flag: int) -> int:

@@ -1,0 +1,42 @@
+# ---------------------------------------------------------------------------
+# Generated vanilla data
+# ---------------------------------------------------------------------------
+# Block/state/registry data extracted from a local Minecraft installation by
+# src/engine/blockdb_setup.c. It is derived from Mojang content, so it must
+# never be committed - see docs/PARITY_BOUNDARY.md. The client regenerates it
+# on launch when it is missing.
+generated/
+
+# ---------------------------------------------------------------------------
+# Build products
+# ---------------------------------------------------------------------------
+# tools/bundle.py emits build/<name>.cpy, `cpyte build` emits the object files
+# and dist/<name>.exe. ./build.sh and ./test.sh regenerate all of it.
+build/
+dist/
+logs/
+*.o
+*.a
+*.dSYM/
+
+# ---------------------------------------------------------------------------
+# Python tooling caches (build-time only; the shipped binary has no Python)
+# ---------------------------------------------------------------------------
+__pycache__/
+*.pyc
+
+# Note on already-tracked files: .gitignore does not untrack anything. Before
+# this file existed, build/, dist/, some src/*.o and generated/blockdb.bin were
+# committed. `git rm -r --cached build dist src/engine/blockdb.o src/network.o
+# generated` stops tracking them while leaving the files on disk.
+
+# ---------------------------------------------------------------------------
+# Embedded single-player server
+# ---------------------------------------------------------------------------
+# server/ holds our own FFI shim over Pumpkin (its source is MIT). Pumpkin
+# itself is fetched into vendor/ by tools/pumpkin_host.sh: it is GPL-3.0, and
+# its build generates Mojang-derived data. Nothing under vendor/ belongs in
+# this repository. server/target/ holds the static library the client links.
+vendor/
+server/target/
+server/Cargo.lock

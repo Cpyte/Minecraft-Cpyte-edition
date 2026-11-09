@@ -82,7 +82,7 @@ struct VNbt:
     int64 val_long
     float val_float
     double val_double
-    str val_str                # string payload
+    str val_str                # string payload, only for kind == nbt_string
     char* bytes                # byte array
     int bytes_len
     int* ints                  # int array
@@ -94,10 +94,15 @@ struct VNbt:
     int items_cap
 
 
+# String ownership: `name` always, and `val_str` for a string node, are heap
+# copies the node frees itself. A caller may hand over a literal, a slice or a
+# buffer it releases immediately, and the tree keeps its own copy - which is
+# what lets a decoded registry packet give its bytes back as soon as it is
+# done with them.
 public def nbt_new(kind: int, name: str) -> VNbt*:
     VNbt* t = new VNbt
     t.kind = kind
-    t.name = name
+    t.name = vt_dup(name)
     t.val_int = 0
     t.val_long = (int64)0
     t.val_float = (float)0
@@ -115,6 +120,15 @@ public def nbt_new(kind: int, name: str) -> VNbt*:
     return t
 
 
+# Renames a node, taking a copy of `name` and releasing the one it held.
+public def nbt_set_name(t: VNbt*, name: str) -> void:
+    if t == null:
+        return
+    str copy = vt_dup(name)
+    vt_free((void*)t.name)
+    t.name = copy
+
+
 public def nbt_free(t: VNbt*) -> void:
     if t == null:
         return
@@ -122,14 +136,13 @@ public def nbt_free(t: VNbt*) -> void:
     while i < t.items_len:
         nbt_free((VNbt*)vt_ptr_get(t.items, i))
         i += 1
-    if t.bytes != null:
-        vt_free((void*)t.bytes)
-    if t.ints != null:
-        vt_free((void*)t.ints)
-    if t.longs != null:
-        vt_free((void*)t.longs)
-    if t.items != null:
-        vt_free((void*)t.items)
+    if t.kind == nbt_string():
+        vt_free((void*)t.val_str)
+    vt_free((void*)t.bytes)
+    vt_free((void*)t.ints)
+    vt_free((void*)t.longs)
+    vt_free((void*)t.items)
+    vt_free((void*)t.name)
     del t
 
 
@@ -222,7 +235,9 @@ public def nbt_double_of(name: str, value: double) -> VNbt*:
 
 public def nbt_string_of(name: str, value: str) -> VNbt*:
     VNbt* t = nbt_new(nbt_string(), name)
-    t.val_str = value
+    # The node owns the payload copy, so `value` may be a literal or a buffer
+    # the caller frees as soon as this returns.
+    t.val_str = vt_dup(value)
     return t
 
 
@@ -556,6 +571,7 @@ def nbt_read_payload(kind: int, name: str, b: VBuf*, depth: int) -> VNbt*:
             if ok_name == 0:
                 return null
             VNbt* child = nbt_read_payload(next, child_name, b, depth + 1)
+            vt_free((void*)child_name)
             if child == null:
                 return null
             nbt_append(t, child)
@@ -573,5 +589,8 @@ public def nbt_read(b: VBuf*) -> VNbt*:
     str name = vbuf_take_str_u16_be(b, &ok_name)
     if ok_name == 0:
         return null
-    return nbt_read_payload(kind, name, b, 0)
+    VNbt* t = nbt_read_payload(kind, name, b, 0)
+    # nbt_new takes its own copy, so this one is no longer needed by anyone.
+    vt_free((void*)name)
+    return t
 

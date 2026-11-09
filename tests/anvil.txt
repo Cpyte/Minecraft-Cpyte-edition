@@ -1,0 +1,4 @@
+# Anvil region test bundle.
+use ../src/engine.txt
+harness.cpy
+test_anvil.cpy
